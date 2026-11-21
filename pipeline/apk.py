@@ -72,6 +72,7 @@ def manifest_text(package, label, version_code=1, version_name="1.0", target_sdk
         android:extractNativeLibs="true" android:enableOnBackInvokedCallback="false">
         <activity android:name="{SETUP}" android:label="{escape(label, {'"': '&quot;'})}" android:exported="true"
             android:launchMode="singleTask" android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -84,7 +85,7 @@ def manifest_text(package, label, version_code=1, version_name="1.0", target_sdk
             </intent-filter>
         </activity>
         <activity android:name="{ACTIVITY}" android:label="{escape(label, {'"': '&quot;'})}"
-            android:alwaysRetainTaskState="true" android:launchMode="singleInstance" android:screenOrientation="sensorLandscape"
+            android:process=":game" android:screenOrientation="sensorLandscape"
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:preferMinimalPostProcessing="true" android:exported="false">
         </activity>
@@ -155,13 +156,27 @@ def ensure_key(keystore, t, run=subprocess.run):
     return True
 
 
-def build_apk(out, *, package, label, libs, assets, icon, keystore, t, java_src, version_code=1, version_name="1.0", work=None, extra_assets=()):
+def build_apk(out, *, package, label, libs, assets, icon, keystore, t, version_code=1, version_name="1.0", work=None, extra_assets=()):
     """libs: {abi: [paths of .so files]}; assets: (source, name) pairs under assets/nativ/; extra_assets: (source, path)
-    pairs under assets/ (the game's files inside: nativ-data/app0.zip); java_src: the Java sources; icon: a PNG"""
+    pairs under assets/ (the game's files inside: nativ-data/app0.zip); icon: a PNG"""
     env = dict(os.environ, JAVA_HOME=t["java_home"], PATH=os.path.join(t["java_home"], "bin") + os.pathsep + os.environ.get("PATH", ""))
     def run(argv): subprocess.run(argv, check=True, env=env)
     w = work or tempfile.mkdtemp(prefix="nativ-apk-")
     try:
+        platform_src = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "runtime", "platform", "android"))
+        java_sources = [os.path.join(platform_src, name) for name in ("NativActivity.java", "SetupActivity.java", "DriverStore.java")]
+        libs = {abi: list(files) for abi, files in libs.items()}
+        if "arm64-v8a" in libs:
+            driver_work = os.path.abspath(os.path.join(w, "driver"))
+            run(["bash", os.path.join(platform_src, "driver", "build.sh"), os.path.abspath(t["root"]), driver_work])
+            driver_build = os.path.join(driver_work, "build")
+            libs["arm64-v8a"] += [os.path.join(driver_build, "libnativ_vulkan.so")]
+            libs["arm64-v8a"] += [os.path.join(driver_build, "adrenotools", "src", "hook", name)
+                                  for name in ("libmain_hook.so", "libhook_impl.so")]
+            source = os.path.join(driver_work, "source")
+            extra_assets = [*extra_assets,
+                            (os.path.join(source, "LICENSE"), "licenses/libadrenotools.txt"),
+                            (os.path.join(source, "lib", "linkernsbypass", "LICENSE"), "licenses/liblinkernsbypass.txt")]
         os.makedirs(os.path.join(w, "res", "mipmap"), exist_ok=True)
         shutil.copyfile(icon, os.path.join(w, "res", "mipmap", "icon.png"))
         a = os.path.join(w, "assets", "nativ"); os.makedirs(a, exist_ok=True)
@@ -179,7 +194,7 @@ def build_apk(out, *, package, label, libs, assets, icon, keystore, t, java_src,
              "--version-code", str(version_code), "--version-name", version_name, "-0", "zip", os.path.join(w, "res.zip")])   # (-0 zip: the data zip stored as it is)
         cls = os.path.join(w, "classes"); os.makedirs(cls, exist_ok=True)
         run([os.path.join(t["java_home"], "bin", "javac"), "-nowarn", "--release", "11", "-encoding", "UTF-8",
-             "-classpath", t["jar"] + os.pathsep + t["sdl_jar"], "-d", cls] + ([java_src] if isinstance(java_src, str) else list(java_src)))
+             "-classpath", t["jar"] + os.pathsep + t["sdl_jar"], "-d", cls] + java_sources)
         ours = os.path.join(w, "ours.jar")
         run([os.path.join(t["java_home"], "bin", "jar"), "cf", ours, "-C", cls, "."])
         dex = os.path.join(w, "dex"); os.makedirs(dex, exist_ok=True)

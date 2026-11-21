@@ -1,0 +1,11 @@
+NAME = "Borderlands 2"
+REGION = "US"
+ELF = "eboot.bin.elf"
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libSceJson"
+# The game waits for a vblank after each flip. A second host wait halves its windowed cadence.
+RUN_ENV = "RECOMP_PRESENT_AT_VBLANK=0"
+TEST_FRAMES = 3600
+TEST_TIMEOUT = 900
+
+[versions."1.09"]
+sha256 = "dfeea181c8836fb46599e8161f3b2fed92ae96b530aec57bdded672a7135d4e4"

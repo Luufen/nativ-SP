@@ -85,7 +85,7 @@ if t:
         ks = os.path.join(tmp, "key", "export.keystore"); out = os.path.join(tmp, "out", "game.apk")
         kw = dict(package="local.nativ.pcsz00001", label="Test & Game", libs={"arm64-v8a": [os.path.join(lib, "libSDL3.so"), os.path.join(lib, "libmain.so")]},
                   assets=[(img, "game.img"), (launch, "launch.txt"), (stamp, "stamp.txt")], icon=icon, keystore=ks, t=t,
-                  java_src=[os.path.join(ROOT, "runtime", "platform", "android", n) for n in ("NativActivity.java", "SetupActivity.java")], version_name="1.00")
+                  version_name="1.00")
         dz = os.path.join(tmp, "app0.zip"); zipfile.ZipFile(dz, "w").writestr("nativ-data.txt", "title PCSZ00001\nid x\n")
         kw["extra_assets"] = [(dz, "nativ-data/app0.zip")]
         try: apk.build_apk(out, **kw); err = ""
@@ -97,6 +97,9 @@ if t:
                   {"classes.dex", "lib/arm64-v8a/libmain.so", "lib/arm64-v8a/libSDL3.so", "assets/nativ/game.img",
                    "assets/nativ/launch.txt", "assets/nativ/stamp.txt", "assets/nativ-data/app0.zip", "AndroidManifest.xml"} <= set(names), names)
             check("APK: the game's files zip stored as it is (not compressed again)", zipfile.ZipFile(out).getinfo("assets/nativ-data/app0.zip").compress_type == zipfile.ZIP_STORED)
+            check("APK: ARM64 Vulkan bridge, its hooks, and their notices are present",
+                  {"lib/arm64-v8a/libnativ_vulkan.so", "lib/arm64-v8a/libmain_hook.so", "lib/arm64-v8a/libhook_impl.so",
+                   "assets/licenses/libadrenotools.txt", "assets/licenses/liblinkernsbypass.txt"} <= set(names), names)
             check("APK: no .idsig left beside it", not os.path.exists(out + ".idsig"))
             dex = zipfile.ZipFile(out).read("classes.dex")
             check("classes.dex: NativActivity, SetupActivity and SDL's SDLActivity", b"Lorg/projectnativ/app/NativActivity;" in dex and b"Lorg/projectnativ/app/SetupActivity;" in dex and b"Lorg/libsdl/app/SDLActivity;" in dex)

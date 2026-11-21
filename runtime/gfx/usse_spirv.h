@@ -117,6 +117,8 @@ void usse_spirv_set_fetch_mode(int mode);
  * select): only where verified bit-exact -- Metal on Apple silicon. Decided once by gfx_gpu.c before its first shader;
  * part of the module, like the fetch mode */
 void usse_spirv_set_f16_lean(int on);
+/* Apply the GPU's default before translating shaders. RECOMP_GPU_F16 takes precedence. */
+void usse_spirv_set_f16_exact_default(int on);
 /* canonical varyings: a vertex module writes Location k = semantic k (TEXCOORD0-9, COLOR0, COLOR1, FOG: USSE_CANON_VARY,
  * the components its program lacks as 0, w 1), and a fragment module reads them by semantic, taking the count of components
  * the draw's vertex program writes from UsseDrawUniforms.vfetch[2..3] (usse_spirv_vary_ncomp: 3 bits a semantic, TEXCOORD0-9

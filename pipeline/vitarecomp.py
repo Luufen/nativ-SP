@@ -1556,9 +1556,8 @@ def cmd_export_apk(T, out, rest):
         icon = os.path.join(g.W, "app0", "sce_sys", "icon0.png")
         if not os.path.isfile(icon): icon = os.path.join(ROOT, "assets", "brand", "png", "icon-256.png")
         say(f"export {steps}/{steps}: packing and signing the APK ({pkg})")
-        jsrc = [os.path.join(RUNTIME, "platform", "android", n) for n in ("NativActivity.java", "SetupActivity.java")]
         apk.build_apk(out, package=pkg, label=g.NAME, libs=libs, assets=assets, icon=icon,
-                      keystore=os.path.join(DUMP, "android", "export.keystore"), t=t, java_src=jsrc,
+                      keystore=os.path.join(DUMP, "android", "export.keystore"), t=t,
                       version_name=g.VERSION or "1.0", work=os.path.join(work, "apk"),
                       extra_assets=[(zpath, "nativ-data/app0.zip")] if mode == "inside" else [])
     finally: shutil.rmtree(work, ignore_errors=True)

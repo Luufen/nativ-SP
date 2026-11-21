@@ -85,7 +85,7 @@ A pack is a game's settings file: it tells Nativ how to rebuild that game from y
 SHA-256 of the game's main program. It holds no game code or data. Upstream's four games are unchanged. Frame rate is the highest the game offers in this fork, widescreen the widest picture it fills (16:9: wider screens get black bars at the sides).
 Version is the game release the pack supports. Tested: Yes if this fork ran the game, played or in automated test runs. Every game can render at up to 6× the Vita's 960×544; 4K (4×) was
 checked in the test runs of all of them except Tearaway, LittleBigPlanet, Resistance: Burning Skies, Gundam Breaker 3,
-Phantasy Star Nova, Minecraft and the two Persona Dancing games from PersonaDancingRecomp.
+Phantasy Star Nova, Minecraft, Borderlands 2 and the two Persona Dancing games from PersonaDancingRecomp.
 
 | Game | Title ID | Version | Tested | Frame rate | Widescreen | Max resolution |
 |---|---|---|---|---|---|---|
@@ -124,6 +124,7 @@ Phantasy Star Nova, Minecraft and the two Persona Dancing games from PersonaDanc
 | Phantasy Star Nova (Asia, Chinese) | PCSH00143 | 1.00 | Yes | 30 | not checked yet | not checked yet |
 | Phantasy Star Nova (Japan) | PCSG00351 | 1.05 | Yes | up to 60 | not checked yet | not checked yet |
 | Minecraft: PlayStation Vita Edition (EU) | PCSB00560 | 1.70 | Yes | about 56 measured in a world; higher not checked yet | not checked yet | not checked yet |
+| Borderlands 2 (US) | PCSE00383 | 1.09 | Yes | about 60 measured after Continue on Windows | not checked yet | not checked yet |
 
 Most of these packs were made with the fork's porting tools (below): they hold what Nativ needs to build and boot the
 game from your copy, plus frame-rate and widescreen settings found automatically.
@@ -135,7 +136,7 @@ Android); others stop at a missing function or a feature Nativ doesn't have yet.
 ## What's new compared with Project Nativ v0.1.5
 
 **Games**
-- **35 more games** than upstream's 4 (see [Tested games](#tested-games)): they render at **up to 6× the Vita's
+- **36 more games** than upstream's 4 (see [Tested games](#tested-games)): they render at **up to 6× the Vita's
   resolution (4K and beyond)**, 10 of them run at **up to 120 fps** and 7 fill **21:9** widescreen.
 - **A game without a pack still gets a start:** adding it writes a first pack automatically.
 
@@ -149,6 +150,10 @@ Android); others stop at a missing function or a feature Nativ doesn't have yet.
 - **Export** a built game for your own devices: **another Windows PC**, a **Steam Deck** (AppImage) or an **Android**
   phone or tablet (`.apk`). Steam Deck and Android builds run in WSL on Windows and need a one-time toolchain setup
   (`runtime/platform/linux/setup-toolchain.sh`, `runtime/platform/android/setup-toolchain.sh`).
+  On ARM64 Android devices with a Qualcomm Adreno GPU, open **Settings → GPU driver** in the exported game app.
+  Use **Import ZIP** for an AdrenoTools package such as Mesa Turnip, or choose **System driver** to switch back.
+  You can remove installed packages from the same menu. The choice is saved for that app and takes effect when you tap
+  **Play**. To get these settings in an existing Android installation, export a new APK.
 - **Add to Steam**, also from the Steam Deck's Game Mode (its shortcuts start again since lf16, see
   [Steam Deck](#steam-deck)). English and German; any window size or fullscreen.
 - **Command line** (`--list`, `--play`, `--build`, `--add`, `--data-dir`, `--fullscreen`, `--windowed`), **portable**
@@ -200,7 +205,11 @@ Android); others stop at a missing function or a feature Nativ doesn't have yet.
 - Steam Deck: Uncharted: Golden Abyss (EU) at 60 fps in Game Mode (from a Steam shortcut), Medieval Defenders and Soul
   Sacrifice Delta, each exported as an AppImage (`vitarecomp export-appimage`).
 - Android (Samsung Galaxy Tab S7, Android 13): AQUA KITTY DX and Soul Sacrifice Delta, each exported as an `.apk`,
-  played by touch with picture, sound and movies.
+  played by touch with picture, sound and movies. Uncharted: Golden Abyss reached the prologue on Adreno 650 after
+  a fix to HDR framebuffer blending. Killzone: Mercenary reached mission 2, where the frame rate was well below 60.
+- Android (Samsung Galaxy S24+, Android 16, Xclipse 940): Uncharted: Golden Abyss now reaches the prologue with the
+  Samsung Vulkan system driver. **Severe graphics defects remain on this device.** The test confirms startup and
+  prologue entry.
 - Each release's Windows launcher passes the controller, touch, scroll, export and screen-fit tests. The Linux
   tarball added, built and started Medieval Defenders in a test on Linux; the launcher AppImage is built and packaged
   only. The current releases are built on

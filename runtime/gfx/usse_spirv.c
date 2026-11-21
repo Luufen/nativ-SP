@@ -58,7 +58,8 @@ enum {
 enum { SpvStorageUniformConstant = 0, SpvStorageInput = 1, SpvStorageUniform = 2, SpvStorageOutput = 3, SpvStoragePrivate = 6 };
 enum { SpvExecModelVertex = 0, SpvExecModelFragment = 4 };
 enum { SpvDecorationLocation = 30, SpvDecorationBinding = 33, SpvDecorationDescriptorSet = 34,
-       SpvDecorationBuiltIn = 11, SpvDecorationFlat = 14, SpvDecorationBlock = 2, SpvDecorationOffset = 35, SpvDecorationInputAttachmentIndex = 43 };
+       SpvDecorationBuiltIn = 11, SpvDecorationFlat = 14, SpvDecorationBlock = 2, SpvDecorationNonWritable = 24,
+       SpvDecorationOffset = 35, SpvDecorationInputAttachmentIndex = 43 };
 enum { SpvBuiltInPosition = 0, SpvBuiltInVertexIndex = 42, SpvBuiltInFragDepth = 22, SpvBuiltInFragCoord = 15 };
 enum { GLSLRoundEven = 2, GLSLFAbs = 4, GLSLFloor = 8, GLSLFClamp = 43, GLSLLog2 = 30, GLSLExp2 = 29, GLSLSqrt = 31, GLSLInverseSqrt = 32, GLSLFMin = 37, GLSLFMax = 40, GLSLPow = 26 };
 
@@ -259,10 +260,15 @@ uint32_t usse_spirv_vary_ncomp(const UsseVertexLayout *vl, int word) {
 	for (int k = k0; k < k1; k++) { int n; vary_sem(vl, k, &n); w |= (uint32_t)n << (3 * (k - k0)); }
 	return w;
 }
+static int f16_exact_default;
+void usse_spirv_set_f16_exact_default(int on) { f16_exact_default = on != 0; }
 static int f16_mode(void) {
 	static int m = -1;
-	if (m < 0) { const char *e = getenv("RECOMP_GPU_F16"); m = !e || !*e || !strcmp(e, "masked") ? 1 : !strcmp(e, "native") ? 2 : 0; }
-	return m;
+	if (m < 0) {
+		const char *e = getenv("RECOMP_GPU_F16");
+		m = !e || !*e ? 3 : !strcmp(e, "masked") ? 1 : !strcmp(e, "native") ? 2 : 0;
+	}
+	return m == 3 ? !f16_exact_default : m;
 }
 static uint32_t half_to_float_spv(Spv *s, uint32_t h_u32) {
 	if (f16_mode()) {   /* GLSL.std.450 UnpackHalf2x16: the low half of the word, exact */
@@ -292,6 +298,32 @@ static uint32_t half_to_float_spv(Spv *s, uint32_t h_u32) {
 	uint32_t bits = result3(s, &s->func, SpvOpSelect, t_uint(s), is_sub, sub, result3(s, &s->func, SpvOpSelect, t_uint(s), is_top, naninf, norm_bits));
 	return result1(s, &s->func, SpvOpBitcast, t_float(s), bits);
 }
+/* Round toward zero using the binary32 bit pattern. Clamp overflow to signed infinity;
+ * subnormal shifts are in 0..24, and NaNs retain their sign and the guest quiet-NaN encoding. */
+static uint32_t compact_float_to_half_spv(Spv *s, uint32_t value) {
+	uint32_t u32 = t_uint(s);
+	uint32_t bits = result1(s, &s->func, SpvOpBitcast, u32, value);
+	uint32_t mag = uop2(s, SpvOpBitwiseAnd, bits, c_uint(s, 0x7fffffffu));
+	uint32_t sign = uop2(s, SpvOpShiftRightLogical,
+		uop2(s, SpvOpBitwiseAnd, bits, c_uint(s, 0x80000000u)), c_uint(s, 16));
+	uint32_t cap = nid(s);
+	INS(&s->func, SpvOpExtInst, u32, cap, s->glsl_ext, 38 /* UMin */, mag, c_uint(s, 0x47800000u));
+	uint32_t normal = uop2(s, SpvOpShiftRightLogical,
+		uop2(s, SpvOpISub, cap, c_uint(s, 0x38000000u)), c_uint(s, 13));
+	uint32_t exponent = uop2(s, SpvOpShiftRightLogical, mag, c_uint(s, 23));
+	uint32_t shift = nid(s);
+	uint32_t relative = uop2(s, SpvOpISub, c_uint(s, 126), exponent);
+	INS(&s->func, SpvOpExtInst, u32, shift, s->glsl_ext, 38 /* UMin */, relative, c_uint(s, 24));
+	uint32_t mantissa = uop2(s, SpvOpBitwiseAnd, mag, c_uint(s, 0x007fffffu));
+	uint32_t subnormal = uop2(s, SpvOpShiftRightLogical,
+		uop2(s, SpvOpBitwiseOr, mantissa, c_uint(s, 0x00800000u)), shift);
+	uint32_t small = result2(s, &s->func, SpvOpULessThan, t_bool(s), mag, c_uint(s, 0x38800000u));
+	uint32_t nan = result2(s, &s->func, SpvOpUGreaterThan, t_bool(s), mag, c_uint(s, 0x7f800000u));
+	uint32_t magnitude = result3(s, &s->func, SpvOpSelect, u32, small, subnormal, normal);
+	magnitude = result3(s, &s->func, SpvOpSelect, u32, nan, c_uint(s, 0x7e00u), magnitude);
+	return uop2(s, SpvOpBitwiseOr, sign, magnitude);
+}
+
 /* ports usse.c's float_to_half exactly (bit for bit), including the cases the first version of
  * this function skipped: a zero/small value (exp8<113, i.e. ne<=0) does NOT belong in the "normal"
  * formula's shift range -- shifting a negative amount there is undefined and, in practice, a real
@@ -300,6 +332,12 @@ static uint32_t half_to_float_spv(Spv *s, uint32_t h_u32) {
  * screen. Denormals, flush-to-zero, overflow-to-infinity and NaN's quiet bit are all handled now,
  * via OpSelect instead of real branches (this pass stays single-basic-block throughout). */
 static uint32_t float_to_half_spv(Spv *s, uint32_t f) {
+	static int compact = -1;
+	if (compact < 0) {
+		const char *option = getenv("RECOMP_GPU_F16_COMPACT");
+		compact = option && *option && *option != '0';
+	}
+	if (compact && f16_mode() == 1 && !f16_lean) return compact_float_to_half_spv(s, f);
 	if (f16_mode()) {
 		uint32_t bits = result1(s, &s->func, SpvOpBitcast, t_uint(s), f), src = f;
 		uint32_t e = result3(s, &s->func, SpvOpBitFieldUExtract, t_uint(s), bits, c_uint(s, 23), c_uint(s, 8));
@@ -2528,11 +2566,14 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 		INS(&s->decos, SpvOpDecorate, vstruct, SpvDecorationBlock);
 		INS(&s->decos, SpvOpMemberDecorate, vstruct, 0, SpvDecorationOffset, 0);
 		g.var_vin = global_var(s, t_ptr(s, 12 /*StorageBuffer*/, vstruct), 12, 0);
+		/* Vertex-stage storage buffers are read-only without vertexPipelineStoresAndAtomics. */
+		INS(&s->decos, SpvOpDecorate, g.var_vin, SpvDecorationNonWritable);
 		INS(&s->decos, SpvOpDecorate, g.var_vin, SpvDecorationDescriptorSet, 0);
 		INS(&s->decos, SpvOpDecorate, g.var_vin, SpvDecorationBinding, (uint32_t)g.nsmp);
 		g.ptr_vin_u = t_ptr(s, 12, t_u);
 		if (g.nwin) {   /* the LDST windows: the same runtime-array-of-words block, the binding after the PA input's */
 			g.var_win = global_var(s, t_ptr(s, 12 /*StorageBuffer*/, vstruct), 12, 0);
+			INS(&s->decos, SpvOpDecorate, g.var_win, SpvDecorationNonWritable);
 			INS(&s->decos, SpvOpDecorate, g.var_win, SpvDecorationDescriptorSet, 0);
 			INS(&s->decos, SpvOpDecorate, g.var_win, SpvDecorationBinding, (uint32_t)g.nsmp + 1);
 		}

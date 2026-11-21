@@ -65,3 +65,8 @@ compiled game with SDL3, zlib and FFmpeg's decoders built in (and SDL's Java sid
 | [SDL](https://libsdl.org), libSDL3.so and its Java side | 3.4.16 | zlib |
 | [zlib](https://zlib.net) | 1.3.1 | zlib |
 | [FFmpeg](https://ffmpeg.org): libavcodec and libavutil, the H.264 and AAC decoders only | 7.1.1 | LGPL 2.1 or later |
+| [libadrenotools](https://github.com/bylaws/libadrenotools), ARM64 Android APKs | `8fae8ce254dfc1344527e05301e43f37dea2df80` | BSD 2-clause |
+| [liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass), libadrenotools dependency | `aa3975893d83ef1bc84c321ec60c65fbf1287887` | BSD 2-clause |
+
+ARM64 exports build the GPU driver loader from the pinned sources and include their notices under `assets/licenses/`.
+The Android app imports driver packages selected by the player into its private storage.

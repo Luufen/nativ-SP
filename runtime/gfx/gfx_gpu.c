@@ -385,6 +385,24 @@ static void msl_lib_store(uint64_t key, int is_fragment, const char *entry, cons
 #endif
 #endif
 static SDL_GPUDevice *gpu(void) { return (SDL_GPUDevice *)window_gpu_device(); }
+
+/* On stock Adreno 650 Vulkan, the alpha-preserving blend shortcut on an
+ * RGBA16F target loses the destination RGB. Keep the shader's framebuffer read. */
+static int keep_alpha_blend_needs_copy(void) {
+#ifdef __ANDROID__
+	static int needs_copy = -1;
+	if (needs_copy < 0) {
+		SDL_GPUDevice *device = gpu();
+		const char *driver = SDL_GetGPUDeviceDriver(device);
+		const char *name = SDL_GetStringProperty(SDL_GetGPUDeviceProperties(device), SDL_PROP_GPU_DEVICE_NAME_STRING, "");
+		needs_copy = driver && !strcmp(driver, "vulkan") && !strcmp(name, "Adreno (TM) 650");
+	}
+	return needs_copy;
+#else
+	return 0;
+#endif
+}
+
 /* the GPU device (window.c, gfxreplay.c): SDL picks the backend. Vulkan is asked for fragmentStoresAndAtomics as well (the
  * visibility tests count in a buffer from a fragment shader, which SDL_GPU otherwise binds for reading only; Metal writes it as
  * it is), and for robustBufferAccess: a shader reading past the end of a buffer gets zeros instead of a GPU fault. Metal shrugs
@@ -392,12 +410,15 @@ static SDL_GPUDevice *gpu(void) { return (SDL_GPUDevice *)window_gpu_device(); }
  * VK_ERROR_DEVICE_LOST: Killzone crashed, Unit 13 froze, 2026-10-23). A device without the features is made without them,
  * the tests then off. */
 static int vk_fragment_stores;   /* a Vulkan device with fragmentStoresAndAtomics */
-void *gfx_gpu_create_device(void) {
+static SDL_GPUDevice *create_gpu_device(void) {
 	SDL_GPUDevice *d = 0;
 #ifndef __APPLE__   /* (on Apple, Metal: SDL could otherwise find MoltenVK) */
 	if (!getenv("SDL_GPU_DRIVER") || !strcmp(getenv("SDL_GPU_DRIVER"), "vulkan")) {
 		uint32_t vk10[55] = {0}; vk10[0] = 1; vk10[26] = 1;   /* VkPhysicalDeviceFeatures, 55 VkBool32 in the spec's order: [0] robustBufferAccess, [26] fragmentStoresAndAtomics */
 		SDL_GPUVulkanOptions vo = {0}; vo.vulkan_api_version = 1u << 22; vo.vulkan_10_physical_device_features = vk10;   /* (VK_MAKE_VERSION(1, 0, 0): SDL's own default) */
+#ifdef __ANDROID__
+		vo.vulkan_api_version |= 1u << 12;   /* Vulkan 1.1 supports the renderer's SPIR-V 1.3 */
+#endif
 		SDL_PropertiesID p = SDL_CreateProperties();
 		SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
 		SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, getenv("RECOMP_GPU_DEBUG_SDL") != 0);   /* (off, as SDL_CreateGPUDevice's was; RECOMP_GPU_DEBUG_SDL=1: SDL's checks -- they stop at an integer-format texture made for sampling, the stencil preload's) */
@@ -414,11 +435,38 @@ void *gfx_gpu_create_device(void) {
 #else
 	if (!d) d = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL, false, 0);
 #endif
+	return d;
+}
+
+void *gfx_gpu_create_device(void) {
+#ifdef __ANDROID__
+	const char *loader = getenv("NATIV_CUSTOM_VULKAN") ? getenv("SDL_VULKAN_LIBRARY") : NULL;
+	if (loader) SDL_SetHintWithPriority(SDL_HINT_VULKAN_LIBRARY, loader, SDL_HINT_OVERRIDE);
+#endif
+	SDL_GPUDevice *d = create_gpu_device();
+#ifdef __ANDROID__
+	if (!d && loader) {
+		fprintf(stderr, "    gpu: custom Vulkan device unavailable (%s), trying the system driver\n", SDL_GetError());
+		SDL_SetHintWithPriority(SDL_HINT_VULKAN_LIBRARY, "libvulkan.so", SDL_HINT_OVERRIDE);
+		d = create_gpu_device();
+	}
+#endif
 #ifdef RECOMP_MTL_ARCHIVE
 	if (d && (SDL_GetGPUShaderFormats(d) & SDL_GPU_SHADERFORMAT_METALLIB) && msl_cache_dir() && !msl_salt()) mtl_archive_on = mtl_archive_open(msl_cache_dir(), msl_lib_store);
 #endif
 	if (d) fprintf(stderr, "    gpu: %s device %s%s\n", SDL_GetGPUDeviceDriver(d), SDL_GetStringProperty(SDL_GetGPUDeviceProperties(d), SDL_PROP_GPU_DEVICE_NAME_STRING, "?"), vk_fragment_stores ? " (robustBufferAccess, fragmentStoresAndAtomics on)" : "");
-	if (d) metrics_set_gpu_name(SDL_GetStringProperty(SDL_GetGPUDeviceProperties(d), SDL_PROP_GPU_DEVICE_NAME_STRING, ""));   /* (the overlay's GPU monitor finds this device by name) */
+	if (d) {
+		const char *name = SDL_GetStringProperty(SDL_GetGPUDeviceProperties(d), SDL_PROP_GPU_DEVICE_NAME_STRING, "");
+		metrics_set_gpu_name(name);
+#ifdef __ANDROID__
+		/* Samsung's Xclipse 940 compiler can fault when linking shaders with UnpackHalf2x16. */
+		int exact_half = !strcmp(name, "Samsung Xclipse 940");
+		usse_spirv_set_f16_exact_default(exact_half);
+		const char *override = getenv("RECOMP_GPU_F16");
+		if (exact_half && (!override || !*override))
+			fprintf(stderr, "    gpu: exact F16 conversion enabled for Samsung Xclipse 940\n");
+#endif
+	}
 	return d;
 }
 /* D24_UNORM_S8_UINT isn't supported on Metal/Apple Silicon (no 24-bit depth format at all there);
@@ -6042,6 +6090,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	static int no_additive = -1; if (no_additive < 0) no_additive = getenv("RECOMP_GPU_NO_ADDITIVE") != 0;
 	int fb_blend = fl && fl->frag_color_used && fetch_mode() == 1 && !no_additive
 	               && !(d->blend.present && (d->blend.color_func || d->blend.alpha_func)) ? usse_fragment_fb_blend(fp) : 0;
+	if (fb_blend == USSE_FB_LERP_KEEP && scene_entry->kind == TK_F16 && keep_alpha_blend_needs_copy()) fb_blend = 0;
 	/* (local-forkport2: ours -- an 8-bit program on an RGBA8 target, a float one on F16/HDR10 -- or Tzeentchnet 338a651's
 	 * alpha-lerp blends on a linear U8 target) */
 	g_fzero_draw = ((fl && fl->color_type == 0 /* TY_U8 */ ? scene_entry->kind == TK_U8 : (scene_entry->kind == TK_F16 || scene_entry->kind == TK_HDR10))

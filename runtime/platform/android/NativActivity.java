@@ -12,6 +12,7 @@ import android.content.res.AssetManager;
 import android.os.Bundle;
 import android.system.Os;
 import android.util.Log;
+import android.widget.Toast;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -31,7 +32,39 @@ public class NativActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle state) {
         try { prepare(); } catch (Exception e) { Log.e(TAG, "the game's start could not be prepared", e); }
+        prepareDriver();
         super.onCreate(state);
+    }
+
+    private void prepareDriver() {
+        String id = getIntent().getStringExtra(DriverStore.EXTRA_DRIVER);
+        if (id == null) {
+            Log.i(TAG, "Using the system Vulkan driver");
+            return;
+        }
+        DriverStore.Driver driver = new DriverStore(this).find(id);
+        try {
+            if (driver != null) {
+                String hooks = getApplicationInfo().nativeLibraryDir + File.separator;
+                System.loadLibrary("nativ_vulkan");
+                if (DriverStore.activate(hooks, driver.directory.getAbsolutePath() + File.separator, driver.library)) {
+                    Os.setenv("SDL_VULKAN_LIBRARY", hooks + DriverStore.LOADER, true);
+                    Os.setenv("NATIV_CUSTOM_VULKAN", "1", true);
+                    return;
+                }
+            }
+        } catch (Exception | LinkageError e) {
+            Log.w(TAG, "Could not start the selected Vulkan driver", e);
+        }
+        Log.w(TAG, "Custom Vulkan driver unavailable. Using the system Vulkan driver.");
+        Toast.makeText(this, "Custom GPU driver unavailable. Using the system driver.", Toast.LENGTH_LONG).show();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Vulkan loader and driver globals are scoped to :game. Restart that process for the next Play.
+        if (isFinishing()) android.os.Process.killProcess(android.os.Process.myPid());
     }
 
     @Override
