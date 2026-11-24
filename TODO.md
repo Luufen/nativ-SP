@@ -4,3 +4,4 @@
   The Vulkan startup crash is fixed.
 - Android on Adreno 650. Profile Killzone: Mercenary in mission 2, where it falls short of 60 fps.
 - Borderlands 2. Check widescreen and higher render resolutions for the US 1.09 pack.
+- ISSUE-19, 2026-11-24. Play applies a compatible installed update to a stale import and requires 1.70 for PCSB00560. Exports use the imported data tree. Six regression tests and all 22 synthetic APK checks passed. Reporter verification on Vega 8 and Android remains open.

@@ -4,6 +4,7 @@
 NAME = "Minecraft: PlayStation Vita Edition"
 REGION = "EU"
 ELF = "eboot.bin.elf"
+UPDATE_NOTE = "Install or re-add the EU 1.70 update for PCSB00560 in the launcher before playing."
 MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult"
 TEST_FRAMES = 3600        # a boot probe toward the title menu (refined once the boot is characterised)
 TEST_TIMEOUT = 900

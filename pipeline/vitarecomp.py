@@ -137,6 +137,7 @@ import glob
 import hashlib
 import json
 import os
+from pathlib import Path
 import queue
 import re
 import shutil
@@ -286,6 +287,14 @@ def version_of(versions, digest):
     for e in versions.split():
         if e.partition("=")[2].split(":")[0] == digest: return e.split("=")[0]
     return ""
+
+
+def unsupported_version(g):
+    versions = ", ".join(e.split("=")[0] for e in g.VERSIONS.split())
+    say(f"{g.T}: this copy's {g.ELF} does not match a version in packs/{g.PACK}/pack.toml. Supported versions: {versions}.")
+    if g.UPDATE_NOTE: say(g.UPDATE_NOTE)
+    if not ENV.get("FORCE"): die()
+    return "unknown"
 
 
 # ---- the commands that take a file or folder rather than a title: firmware, scan, licenses and add
@@ -548,12 +557,16 @@ class Game:
         # VERSION: which of the pack's builds this copy is (import records it from the main program's hash): the pack's
         # per-version settings (HOOKS, GAME_ADDRS, FUNCTION_SEEDS...) branch on it
         vf = os.path.join(self.W, "version")
-        version = open(vf, encoding="utf-8").read().rstrip("\n") if os.path.isfile(vf) else ""
+        version = Path(vf).read_text(encoding="utf-8").rstrip("\n") if os.path.isfile(vf) else ""
         c = packconf.load(self.CONF, version, ENV)
         elf = os.path.join(self.W, "elf", c["ELF"])
-        if not version and c["VERSIONS"] and os.path.isfile(elf) and cmd != "import":   # a copy imported before versions were recorded
-            version = version_of(c["VERSIONS"], sha256(elf))
-            if version:
+        self.detected_version = None
+        # Check the ELF at launch even when an older import left version metadata behind.
+        check_version = cmd in ("ready", "run") or cmd.startswith("export-")
+        if (check_version or not version) and c["VERSIONS"] and os.path.isfile(elf) and cmd != "import":
+            self.detected_version = version_of(c["VERSIONS"], sha256(elf))
+            if self.detected_version and self.detected_version != version:
+                version = self.detected_version
                 with open(vf, "w") as f: f.write(version + "\n")
                 c = packconf.load(self.CONF, version, ENV)
         # TEST_INPUT / TEST_TOUCH / TEST_FRAMES set in the environment override the pack's for one run
@@ -687,11 +700,7 @@ def cmd_import(g, src):
     # would mis-hook, so say so here rather than crash later; which one this is goes to $W/version, for the pack's per-version settings
     if g.VERSIONS:
         v = version_of(g.VERSIONS, sha256(os.path.join(W, "elf", g.ELF)))
-        if not v:
-            vs = [e.split("=")[0] for e in g.VERSIONS.split()]
-            say(f"{g.T}: this copy's {g.ELF} is no version packs/{g.PACK}/pack.toml plays (it plays {', '.join(vs)}): another version or region, or a modified dump (MaiDump's eboot loads its _m modules)? its hooks won't fit")
-            if not ENV.get("FORCE"): die()
-            v = "unknown"
+        if not v: v = unsupported_version(g)
         with open(os.path.join(W, "version"), "w") as f: f.write(v + "\n")
         say(f"{g.T}: version {v}")
     run_filtered([PY, os.path.join(RECOMPILER, "imports.py"), os.path.join(W, "elf", g.ELF)], None, first=True)
@@ -751,17 +760,18 @@ def cmd_recompile(g):
 
 
 def recompile_inputs(g):
-    """what a title's generated code was made from: recompiler/ and its pack.toml (HOOKS, IHOOKS, MODULES, FUNCTION_SEEDS ...),
-    as git hashes a blob of their contents in path order -- dev/build-all.sh's formula before this, so its stamps
-    (recomp/.recompile_inputs) stay valid -- and computed without git, so an install has it too"""
+    """Fingerprint the recompiler, pack settings and, for versioned packs, the imported executable."""
     files = [f"packs/{g.PACK}/pack.toml"] if os.path.isfile(g.CONF) else []
     for d, sub, names in os.walk(RECOMPILER):
         sub[:] = [x for x in sub if x != "__pycache__" and not x.startswith(".")]
         # (hidden files aren't the recompiler's: a tar from a Mac leaves ._ metadata beside each file, 2026-10-26)
         files += [os.path.relpath(os.path.join(d, n), ROOT).replace(os.sep, "/") for n in names if not n.endswith(".pyc") and not n.startswith(".")]
     src = lambda f: g.CONF if f == f"packs/{g.PACK}/pack.toml" else os.path.join(ROOT, f)   # (the pack read where it is: ATIV_PACKS)
-    data = b"".join(open(src(f), "rb").read() for f in sorted(files, key=lambda f: f.encode()))
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    data = b"".join(Path(src(f)).read_bytes() for f in sorted(files, key=lambda f: f.encode()))
+    stamp = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    elf = os.path.join(g.W, "elf", g.ELF)
+    if g.VERSIONS and os.path.isfile(elf): stamp += ":" + sha256(elf)
+    return stamp
 
 
 def tools_version():
@@ -782,9 +792,17 @@ def cmd_ready(g):
         f = os.path.join(g.OUT, n)
         return open(f, encoding="utf-8").read().strip() if os.path.isfile(f) else ""
     if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{g.T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    if g.detected_version == "":
+        update = os.path.join(g.W, "patch0", g.ELF)
+        if os.path.isfile(update) and version_of(g.VERSIONS, sha256(update)):
+            say(f"{g.T}: applying its installed update before building")
+            run(SELF + ["import", g.T])
+            g = Game(g.T, "ready")
+        if g.detected_version == "": unsupported_version(g)
     remade = False
     if stamp(".recompile_inputs") != recompile_inputs(g):
-        say(f"{g.T}: the recompiler or the game's pack changed since its code was made: making it again")
+        say(f"{g.T}: the game executable, pack or recompiler changed since its code was made: making it again")
+        Path(os.path.join(g.OUT, ".built_version")).unlink(missing_ok=True)
         run(SELF + ["analyze", g.T]); run(SELF + ["recompile", g.T]); remade = True
     ver = tools_version()
     if remade or not ver or stamp(".built_version") != ver or not os.path.isfile(os.path.join(g.OUT, g.EXE)):
@@ -889,6 +907,7 @@ def play_fixed_env(g, shipped=None, icon=None):
 def cmd_run(g, frames, game_flags=()):
     """game_flags: the game's own (vitarecomp run <title> -- --fullscreen; the launcher's nativ --play <title> ... --), after
     its three fixed arguments (runtime/core/main.c reads them)"""
+    if g.detected_version == "": unsupported_version(g)
     OUT = g.OUT
     os.makedirs(os.path.join(OUT, "captures"), exist_ok=True)   # F12 in the window saves captures here
     # RUN_ENV: the game's play settings (correctness fixes it needs); TEST_ENV is the gate's and pins the software renderer -- applying it here ran every manual play on the interpreter
@@ -1357,6 +1376,15 @@ def wsl_path(p):   # a Windows path as WSL sees it (/mnt/c/...)
     return subprocess.run(["wsl.exe", "-e", "wslpath", "-a", p], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def export_app0(g):
+    """Export the installed update's merged data when the import uses that tree."""
+    layered = os.path.realpath(os.path.join(g.W, "app0_patched"))
+    runtime_app0 = os.path.realpath(os.path.join(g.OUT, "fs", "app0"))
+    if os.path.isdir(layered) and runtime_app0 == layered:
+        return layered
+    return os.path.realpath(os.path.join(g.W, "app0"))
+
+
 def cmd_export_appimage(T, out, rest):
     """the game as one AppImage for the player's own Linux handheld (pipeline/appimage.py): its code as it is (made by
     the launcher's Build: nothing is recompiled) compiled once more for the handheld's processor -- EXPORT_CPU, default
@@ -1370,7 +1398,7 @@ def cmd_export_appimage(T, out, rest):
         try: wroot, wdump, wout = wsl_path(ROOT), wsl_path(DUMP), wsl_path(os.path.abspath(out))
         except (OSError, subprocess.CalledProcessError): die("export-appimage: needs WSL (wsl.exe) on Windows")
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-        keep = [f"{k}={ENV[k]}" for k in ("EXPORT_CPU", "JOBS", "RUNTIME_FROM", "ATIV_LINUX_TOOLCHAIN", "ATIV_PACKS") if ENV.get(k)]
+        keep = [f"{k}={ENV[k]}" for k in ("EXPORT_CPU", "JOBS", "RUNTIME_FROM", "ATIV_LINUX_TOOLCHAIN", "ATIV_PACKS", "FORCE") if ENV.get(k)]
         for i, kv in enumerate(keep):   # (paths as WSL sees them)
             k, _, v = kv.partition("=")
             if k in ("RUNTIME_FROM", "ATIV_PACKS") and re.match(r"[A-Za-z]:[\\/]", v): keep[i] = f"{k}={wsl_path(v)}"
@@ -1379,6 +1407,7 @@ def cmd_export_appimage(T, out, rest):
                    ["python3", wroot + "/pipeline/vitarecomp.py", "export-appimage", T, wout] + rest, check=False).returncode
     g = Game(T, "export-appimage")
     if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    if g.detected_version == "": unsupported_version(g)
     stamp = os.path.join(g.OUT, ".recompile_inputs")
     if not os.path.isfile(stamp) or open(stamp, encoding="utf-8").read().strip() != recompile_inputs(g):
         die(f"{T}: its code isn't made for these tools yet: build it (vitarecomp ready {T}, or Build in the launcher), then export")
@@ -1403,13 +1432,14 @@ def cmd_export_appimage(T, out, rest):
     files += [(os.path.join(g.OUT, m), m) for m in mods + [n for _p, n in lmods]]
     shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
     if os.path.isfile(shipped): files.append((shipped, "shaders.txt"))
-    icon = os.path.join(g.W, "app0", "sce_sys", "icon0.png")
+    app0 = export_app0(g)
+    icon = os.path.join(app0, "sce_sys", "icon0.png")
     if not os.path.isfile(icon): icon = os.path.join(ROOT, "assets", "brand", "png", "icon-256.png")
     files.append((os.path.join(ROOT, "assets", "brand", "png", "icon-256.png"), "window-icon.png"))
     env = [tuple(w.partition("=")[::2]) for w in g.RUN_ENV.split() if "=" in w] + play_fixed_env(g, "$APPDIR/game/shaders.txt", "$APPDIR/game/window-icon.png")
     cache = os.path.join(os.environ.get("ATIV_CACHE") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "ProjectNativ"), "appimage")   # (ATIV_CACHE: the launcher's --data-dir / portable folder's cache)
     stage = os.path.join(cache, f"appdir-{T}")
-    appimage.make_appdir(stage, title=T, name=g.NAME, exe=exe, files=files, app0=os.path.realpath(os.path.join(g.W, "app0")),
+    appimage.make_appdir(stage, title=T, name=g.NAME, exe=exe, files=files, app0=app0,
                          icon=icon, image=g.BASE + ".img", entry=g.entry(), env=env, modules=mods, load_modules=lmods)
     say("export 3/3: packing the AppImage")
     try:
@@ -1446,7 +1476,7 @@ def apk_install(g, out, adb):
     r = subprocess.run([adb, "install", "-r", out], capture_output=True, text=True)
     if "Success" not in r.stdout: die(f"export-apk --install: adb install failed: {(r.stdout + r.stderr).strip()[-300:]}")
     sh("am", "start", "-W", "-n", f"{pkg}/{apk.SETUP}"); time.sleep(2); sh("am", "force-stop", pkg)   # (Android makes the app's data folder)
-    app0 = os.path.realpath(os.path.join(g.W, "app0")); n = len(apk.app0_files(app0))
+    app0 = export_app0(g); n = len(apk.app0_files(app0))
     if sh(f"cat {D}/fs/app0.id 2>/dev/null") == info["id"] and sh(f"find {D}/fs/app0 -type f | wc -l") == str(n):
         say("install: the game's files are there already")
     else:
@@ -1495,7 +1525,7 @@ def cmd_export_apk(T, out, rest):
         try: wroot, wdump, wout = wsl_path(ROOT), wsl_path(DUMP), wsl_path(os.path.abspath(out))
         except (OSError, subprocess.CalledProcessError): die("export-apk: needs WSL (wsl.exe) on Windows")
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-        keep = [f"{k}={ENV[k]}" for k in ("JOBS", "ATIV_ANDROID_TOOLCHAIN", "ATIV_PACKS") if ENV.get(k)]
+        keep = [f"{k}={ENV[k]}" for k in ("JOBS", "ATIV_ANDROID_TOOLCHAIN", "ATIV_PACKS", "FORCE") if ENV.get(k)]
         for i, kv in enumerate(keep):   # (paths as WSL sees them)
             k, _, v = kv.partition("=")
             if k == "ATIV_PACKS" and re.match(r"[A-Za-z]:[\\/]", v): keep[i] = f"{k}={wsl_path(v)}"
@@ -1506,13 +1536,14 @@ def cmd_export_apk(T, out, rest):
         return rc
     g = Game(T, "export-apk")
     if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    if g.detected_version == "": unsupported_version(g)
     stamp = os.path.join(g.OUT, ".recompile_inputs")
     if not os.path.isfile(stamp) or open(stamp, encoding="utf-8").read().strip() != recompile_inputs(g):
         die(f"{T}: its code isn't made for these tools yet: build it (vitarecomp ready {T}, or Build in the launcher), then export")
     try: t = apk.toolchain()
     except RuntimeError as e: die(f"export-apk: {e}")
     pkg = apk.package_id(g.TITLE_ID)
-    app0 = os.path.realpath(os.path.join(g.W, "app0"))
+    app0 = export_app0(g)
     files = apk.app0_files(app0); size = sum(s for _r, s in files)
     mode = data_mode if data_mode != "auto" else ("inside" if size <= apk.INSIDE_MAX else "apart")
     data_name = os.path.basename(out)[:-4] + "-data.zip"; data_out = os.path.join(os.path.dirname(os.path.abspath(out)), data_name)
@@ -1553,7 +1584,7 @@ def cmd_export_apk(T, out, rest):
             with open(src, "rb") as f: h.update(f.read())
         with open(os.path.join(work, "stamp.txt"), "w", newline="\n") as f: f.write(h.hexdigest() + "\n")
         assets += [(launch, "launch.txt"), (os.path.join(work, "stamp.txt"), "stamp.txt"), (os.path.join(work, "data.txt"), "data.txt")]
-        icon = os.path.join(g.W, "app0", "sce_sys", "icon0.png")
+        icon = os.path.join(app0, "sce_sys", "icon0.png")
         if not os.path.isfile(icon): icon = os.path.join(ROOT, "assets", "brand", "png", "icon-256.png")
         say(f"export {steps}/{steps}: packing and signing the APK ({pkg})")
         apk.build_apk(out, package=pkg, label=g.NAME, libs=libs, assets=assets, icon=icon,
@@ -1600,6 +1631,7 @@ def cmd_export_win(T, out, rest):
     say("export: " + portable.NOTICE)
     g = Game(T, "export-win")
     if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    if g.detected_version == "": unsupported_version(g)
     stamp = os.path.join(g.OUT, ".recompile_inputs")
     if not os.path.isfile(stamp) or open(stamp, encoding="utf-8").read().strip() != recompile_inputs(g):
         die(f"{T}: its code isn't made for these tools yet: build it (vitarecomp ready {T}, or Build in the launcher), then export")
@@ -1621,7 +1653,7 @@ def cmd_export_win(T, out, rest):
     text = portable.start_cmd_text(title=T, name=g.NAME, cpu=cpu, exe=exe, image=g.BASE + ".img", entry=g.entry(), env=env,
                                    modules=mods, load_modules=lmods, settings=[("camera", camera)] if camera else [])
     say(f"export 3/{n}: writing the folder and start.cmd")
-    try: portable.make_folder(out, files=files, app0=os.path.realpath(os.path.join(g.W, "app0")), start_cmd=text, readme=portable.readme_text(g.NAME, cpu))
+    try: portable.make_folder(out, files=files, app0=export_app0(g), start_cmd=text, readme=portable.readme_text(g.NAME, cpu))
     except FileExistsError as e: die(f"export-win: {e}")
     result = out
     if want_zip:
