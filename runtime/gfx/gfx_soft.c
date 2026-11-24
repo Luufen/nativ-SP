@@ -747,6 +747,15 @@ static void apply_swizzle(uint32_t format, int ncomp, float o[4]) {
 		case 0: o[3] = 1; break;                                              /* BGR: c0 is R, as ABGR's */
 		case 1: o[0] = c2; o[1] = c1; o[2] = c0; o[3] = 1; break;             /* RGB */
 		default: o[3] = 1; break;
+	} else if (ncomp == 2) switch (sw) {   /* SWIZZLE2 (U8U8): stored c0 = R, c1 = G; GR, 00GR, GRRR, RGGG, GRGR, 00RG.
+	                                         * Unswizzled, Terraria's luminance-alpha (GRRR) sky drew opaque red-green. */
+		case 0: break;                                                        /* GR: (c0, c1, 0, 1) */
+		case 1: o[3] = 0; break;                                              /* 00GR */
+		case 2: o[0] = o[1] = o[2] = c0; o[3] = c1; break;                    /* GRRR: luminance c0, alpha c1 */
+		case 3: o[0] = o[1] = o[2] = c1; o[3] = c0; break;                    /* RGGG */
+		case 4: o[0] = c0; o[1] = c1; o[2] = c0; o[3] = c1; break;            /* GRGR */
+		case 5: o[0] = c1; o[1] = c0; o[2] = 0; o[3] = 0; break;              /* 00RG */
+		default: break;
 	} else if (ncomp == 1) {
 		float r = c0;
 		static const float k[8][4] = {{-1, 0, 0, 1}, {-1, 0, 0, 0}, {-1, 1, 1, 1}, {-1, -1, -1, -1}, {-1, -1, -1, 0}, {-1, -1, -1, 1}, {0, 0, 0, -1}, {1, 1, 1, -1}};
@@ -759,7 +768,8 @@ static int swizzle_ncomp(uint32_t base) {
 	return base == 0x00000000u || base == 0x01000000u || base == 0x09000000u || base == 0x0a000000u || base == 0x0b000000u || base == 0x12000000u || base == 0x13000000u || base == 0x88000000u ? 1
 	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || base == 0x0e000000u || (base >= 0x85000000u && base <= 0x87000000u)
 	       || base == 0x94000000u || base == 0x95000000u ? 4   /* P4 / P8: their palette entries are U8U8U8U8 */
-	     : base == 0x19000000u || base == 0x98000000u || base == 0x99000000u ? 3 : 0;
+	     : base == 0x19000000u || base == 0x98000000u || base == 0x99000000u ? 3
+	     : base == 0x07000000u ? 2 : 0;   /* U8U8: the SWIZZLE2 modes */
 }
 static void se5m9_unpack(uint32_t p, float c[4]);
 static uint32_t se5m9_pack(float r, float g, float b);

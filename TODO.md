@@ -15,6 +15,7 @@
 - TERRARIA-01, 2026-11-24. Share compiled bodies for alternate entries with the same decode. The synthetic shared-entry check and all 22 recompiler fixtures passed. On the same Terraria analysis, generated C fell from 17.6 GB to 144 MB and the Windows host linked.
 
 - TERRARIA-01, 2026-11-24. The ARM MLAS emitter sets N and Z from the wrapped result. All 23 recompiler fixtures passed. Terraria passed the previous instruction stop on native Windows.
+- TERRARIA-01, 2026-11-24. U8U8 textures honour the GXM SWIZZLE2 modes (GR, 00GR, GRRR, RGGG, GRGR, 00RG) in gfx_soft.c, which the GPU upload shares. Terraria's luminance-alpha title sky no longer draws opaque red-green over an uncleared target. Native Windows reaches a clean title screen at frame 1100, and run_ci_tests.sh passes.
 
 - TERRARIA-01, 2026-11-24. Direct branches into another compiled body now resolve same-mode instruction labels, including sources discovered as code in gaps. All 23 recompiler fixtures passed. The native run passed the previously unresolved split switch branch.
 
