@@ -13,3 +13,5 @@
 - ANDROID-TOUCH-MENU-01, 2026-11-24. A round button between Select and Start on the Android touch overlay opens the existing F10 menu. Android 13 emulator verification covered tap, cancel, drag-off, F10, a saved 60 FPS setting, and Resume. Touch layout checks passed 1984/1984, the save-dialog fixture passed 18/18, the WSL runtime suite passed, and both Android ABIs linked.
 
 - TERRARIA-01, 2026-11-24. Share compiled bodies for alternate entries with the same decode. The synthetic shared-entry check and all 22 recompiler fixtures passed. On the same Terraria analysis, generated C fell from 17.6 GB to 144 MB and the Windows host linked.
+
+- TERRARIA-01, 2026-11-24. The ARM MLAS emitter sets N and Z from the wrapped result. All 23 recompiler fixtures passed. Terraria passed the previous instruction stop on native Windows.

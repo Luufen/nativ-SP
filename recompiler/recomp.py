@@ -303,9 +303,11 @@ class Fn:
         elif mn in ("mul", "muls"):
             a = self.r(ops[1].reg, i); b = self.r(ops[2].reg if len(ops) == 3 else ops[0].reg, i)
             out = [f"{{ uint32_t t = {a} * {b}; {self.dst(ops[0].reg)} = t;" + (" NZ(c, t);" if S else "") + " }"]
-        elif mn in ("mla", "mls"):
-            e = f"{self.r(ops[3].reg, i)} {'+' if mn == 'mla' else '-'} {self.r(ops[1].reg, i)} * {self.r(ops[2].reg, i)}"
-            out = [f"{self.dst(ops[0].reg)} = {e};"]
+        elif mn in ("mla", "mlas", "mls"):
+            op = "-" if mn == "mls" else "+"
+            a, b, acc = (self.r(operand.reg, i) for operand in ops[1:])
+            dst = self.dst(ops[0].reg)
+            out = [f"{dst} = {acc} {op} {a} * {b};" + (f" NZ(c, {dst});" if S else "")]
         elif mn in ("umull", "smull", "umlal", "smlal"):
             lo, hi, a, b = (self.dst(ops[k].reg) for k in range(2)), None, self.r(ops[2].reg, i), self.r(ops[3].reg, i)
             lo, hi = self.dst(ops[0].reg), self.dst(ops[1].reg)
