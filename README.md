@@ -85,7 +85,7 @@ A pack is a game's settings file: it tells Nativ how to rebuild that game from y
 SHA-256 of the game's main program. It holds no game code or data. Upstream's four games are unchanged. Frame rate is the highest the game offers in this fork, widescreen the widest picture it fills (16:9: wider screens get black bars at the sides).
 Version is the game release the pack supports. Tested: Yes if this fork ran the game, played or in automated test runs. Every game can render at up to 6× the Vita's 960×544; 4K (4×) was
 checked in the test runs of all of them except Tearaway, LittleBigPlanet, Resistance: Burning Skies, Gundam Breaker 3,
-Phantasy Star Nova, Minecraft, Borderlands 2 and the two Persona Dancing games from PersonaDancingRecomp.
+Phantasy Star Nova, Minecraft, Borderlands 2, Terraria and the two Persona Dancing games from PersonaDancingRecomp.
 
 | Game | Title ID | Version | Tested | Frame rate | Widescreen | Max resolution |
 |---|---|---|---|---|---|---|
@@ -125,6 +125,7 @@ Phantasy Star Nova, Minecraft, Borderlands 2 and the two Persona Dancing games f
 | Phantasy Star Nova (Japan) | PCSG00351 | 1.05 | Yes | up to 60 | not checked yet | not checked yet |
 | Minecraft: PlayStation Vita Edition (EU) | PCSB00560 | 1.70 | Yes | about 56 measured in a world; higher not checked yet | not checked yet | not checked yet |
 | Borderlands 2 (US) | PCSE00383 | 1.09 | Yes | about 60 measured after Continue on Windows | not checked yet | not checked yet |
+| Terraria (US) | PCSE00317 | 1.11 | Yes | 60 on the title screen; smooth in a world on Windows | not checked yet | not checked yet |
 
 Most of these packs were made with the fork's porting tools (below): they hold what Nativ needs to build and boot the
 game from your copy, plus frame-rate and widescreen settings found automatically.
@@ -201,7 +202,7 @@ Android); others stop at a missing function or a feature Nativ doesn't have yet.
   1.02, also at 60 and 120 fps), Killzone: Mercenary (EU, also at 120 fps) and LittleBigPlanet (30 fps, and the hint
   shown for 60 / 120) and Phantasy Star Nova (Asia, past character creation, with an in-game save; Japan 1.05 with the
   English patch as a data mod, at 60 fps) and Minecraft: PlayStation Vita Edition (a world started and played, about
-  56 fps) played from a local build of the same source; for every game, see the Tested column above.
+  56 fps) and Terraria (US 1.11, character creation and a world) played from a local build of the same source; for every game, see the Tested column above.
 - Steam Deck: Uncharted: Golden Abyss (EU) at 60 fps in Game Mode (from a Steam shortcut), Medieval Defenders and Soul
   Sacrifice Delta, each exported as an AppImage (`vitarecomp export-appimage`).
 - Android (Samsung Galaxy Tab S7, Android 13): AQUA KITTY DX and Soul Sacrifice Delta, each exported as an `.apk`,
