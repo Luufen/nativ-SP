@@ -17,6 +17,7 @@
 - TERRARIA-01, 2026-11-24. The ARM MLAS emitter sets N and Z from the wrapped result. All 23 recompiler fixtures passed. Terraria passed the previous instruction stop on native Windows.
 - TERRARIA-01, 2026-11-24. U8U8 textures honour the GXM SWIZZLE2 modes (GR, 00GR, GRRR, RGGG, GRGR, 00RG) in gfx_soft.c, which the GPU upload shares. Terraria's luminance-alpha title sky no longer draws opaque red-green over an uncleared target. Native Windows reaches a clean title screen at frame 1100, and run_ci_tests.sh passes.
 - TERRARIA-01, 2026-11-24. Seed the start-game ARM entry 0x810ce498 (missed_function at lr 0x810cdd80). Recompile: 12289 functions. Title regression run exits 0; owner start-game check pending.
+- TERRARIA-01, 2026-11-24. Seed ARM 0x8140a090 (render frame-complete: [+0x108]++, SignalSema([+0x110])) and ARM 0x813c0c58. Analysis had decoded both as a single 2-byte Thumb body, so the emitter produced empty functions and the main thread never got its completion signal. The stock build now reaches the title screen at frame 1100 without RECOMP_FAKE_SEMA.
 
 - TERRARIA-01, 2026-11-24. Direct branches into another compiled body now resolve same-mode instruction labels, including sources discovered as code in gaps. All 23 recompiler fixtures passed. The native run passed the previously unresolved split switch branch.
 
