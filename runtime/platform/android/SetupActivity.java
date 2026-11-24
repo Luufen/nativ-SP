@@ -11,6 +11,7 @@ package org.projectnativ.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Color;
@@ -44,6 +45,8 @@ public class SetupActivity extends Activity {
     private static final String TAG = "Nativ";
     private static final int PICK = 1;
     private static final int PICK_DRIVER = 2;
+    private static final int SAVE_LOGS = 3;
+    private static final int SAVE_CRASH_REPORT = 4;
     private final HashMap<String, String> info = new HashMap<>();
     private TextView text;
     private ProgressBar bar;
@@ -152,6 +155,15 @@ public class SetupActivity extends Activity {
 
     private void showSettings() {
         if (busy) return;
+        new AlertDialog.Builder(this).setTitle("Settings")
+                .setItems(new String[] {"GPU driver", "Export session logs", "Export crash report"}, (d, which) -> {
+                    if (which == 0) showGpuSettings();
+                    else chooseDiagnosticDestination(which == 1 ? SAVE_LOGS : SAVE_CRASH_REPORT);
+                })
+                .setPositiveButton("Done", null).show();
+    }
+
+    private void showGpuSettings() {
         if (customDrivers == null) customDrivers = drivers.supported();
         AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("Settings · GPU driver")
                 .setPositiveButton("Done", null);
@@ -174,7 +186,7 @@ public class SetupActivity extends Activity {
             if (!drivers.select(which == 0 ? null : installed.get(which - 1))) {
                 toast("Could not save the GPU driver selection.");
                 d.dismiss();
-                showSettings();
+                showGpuSettings();
             }
         }).setNeutralButton("Import ZIP", (d, which) -> choose(PICK_DRIVER));
         if (!installed.isEmpty()) dialog.setNegativeButton("Remove…", (d, which) -> removeDriver(installed));
@@ -184,15 +196,15 @@ public class SetupActivity extends Activity {
     private void removeDriver(List<DriverStore.Driver> installed) {
         String[] labels = installed.stream().map(driver -> driver.label).toArray(String[]::new);
         new AlertDialog.Builder(this).setTitle("Remove a GPU driver")
-                .setNegativeButton("Cancel", (d, which) -> showSettings())
+                .setNegativeButton("Cancel", (d, which) -> showGpuSettings())
                 .setItems(labels, (d, which) -> {
                     DriverStore.Driver driver = installed.get(which);
                     new AlertDialog.Builder(this).setTitle("Remove GPU driver?")
                             .setMessage(driver.label)
-                            .setNegativeButton("Cancel", (confirm, button) -> showSettings())
+                            .setNegativeButton("Cancel", (confirm, button) -> showGpuSettings())
                             .setPositiveButton("Remove", (confirm, button) -> {
                                 if (!drivers.remove(driver)) toast("Could not remove the GPU driver.");
-                                showSettings();
+                                showGpuSettings();
                             }).show();
                 }).show();
     }
@@ -202,7 +214,7 @@ public class SetupActivity extends Activity {
     }
 
     private void importDriver(Uri uri) {
-        setImportingDriver(true);
+        setSettingsBusy("Importing GPU driver...");
         new Thread(() -> {
             DriverStore.Driver installed = null;
             String error = null;
@@ -216,24 +228,62 @@ public class SetupActivity extends Activity {
             final String message = error;
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
-                setImportingDriver(false);
+                setSettingsBusy(null);
                 if (message != null) {
                     new AlertDialog.Builder(this).setTitle("GPU driver import failed").setMessage(message)
-                            .setPositiveButton("OK", (d, which) -> showSettings()).show();
+                            .setPositiveButton("OK", (d, which) -> showGpuSettings()).show();
                     return;
                 }
                 if (!drivers.select(driver)) toast("Driver installed. Could not save the selection.");
-                showSettings();
+                showGpuSettings();
             });
         }, "driver-import").start();
     }
 
-    private void setImportingDriver(boolean importing) {
-        busy = importing;
-        settings.setEnabled(!importing);
-        pick.setEnabled(!importing);
-        playButton.setEnabled(!importing);
-        settings.setText(importing ? "Importing GPU driver…" : "Settings");
+    private void setSettingsBusy(String message) {
+        busy = message != null;
+        settings.setEnabled(!busy);
+        pick.setEnabled(!busy);
+        playButton.setEnabled(!busy);
+        settings.setText(busy ? message : "Settings");
+    }
+
+    private void chooseDiagnosticDestination(int request) {
+        boolean crashReport = request == SAVE_CRASH_REPORT;
+        if (!crashReport && !DiagnosticsExport.hasLogs(fs.getParentFile())) {
+            toast("No session logs yet. Start the game to create a log.");
+            return;
+        }
+
+        Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        save.addCategory(Intent.CATEGORY_OPENABLE);
+        save.setType("application/zip");
+        save.putExtra(Intent.EXTRA_TITLE, crashReport ? "nativ-crash-report.zip" : "nativ-session-logs.zip");
+        try {
+            startActivityForResult(save, request);
+        } catch (ActivityNotFoundException e) {
+            toast("Android's file picker is unavailable.");
+        }
+    }
+
+    private void exportDiagnostics(Uri destination, boolean crashReport) {
+        setSettingsBusy(crashReport ? "Exporting crash report..." : "Exporting session logs...");
+        new Thread(() -> {
+            boolean saved = false;
+            try {
+                DiagnosticsExport.save(getApplicationContext(), fs.getParentFile(), destination, crashReport);
+                saved = true;
+            } catch (Exception e) {
+                Log.w(TAG, "Could not export diagnostics", e);
+            }
+            final boolean completed = saved;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                setSettingsBusy(null);
+                if (completed) toast(crashReport ? "Crash report saved." : "Session logs saved.");
+                else toast("Could not save the export. Try another folder.");
+            });
+        }, "diagnostics-export").start();
     }
 
     private void choose() {
@@ -253,7 +303,10 @@ public class SetupActivity extends Activity {
         super.onActivityResult(req, res, data);
         if (req == PICK_DRIVER && !busy) {
             if (res == RESULT_OK && data != null && data.getData() != null) importDriver(data.getData());
-            else showSettings();
+            else showGpuSettings();
+        }
+        if ((req == SAVE_LOGS || req == SAVE_CRASH_REPORT) && res == RESULT_OK && data != null && data.getData() != null) {
+            exportDiagnostics(data.getData(), req == SAVE_CRASH_REPORT);
         }
         if (req == PICK && res == RESULT_OK && data != null && data.getData() != null) fromUri(data.getData());
     }
