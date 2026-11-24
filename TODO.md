@@ -17,3 +17,5 @@
 - TERRARIA-01, 2026-11-24. The ARM MLAS emitter sets N and Z from the wrapped result. All 23 recompiler fixtures passed. Terraria passed the previous instruction stop on native Windows.
 
 - TERRARIA-01, 2026-11-24. Direct branches into another compiled body now resolve same-mode instruction labels, including sources discovered as code in gaps. All 23 recompiler fixtures passed. The native run passed the previously unresolved split switch branch.
+
+- TERRARIA-01, 2026-11-24. Experimental PCSE00317 1.11 pack pins the executable and 114 verified ARM entries. Native Windows startup opens the archive and submits three 960 x 544 frames. The 600-frame test times out while the main and render threads wait on separate semaphores. Menu and gameplay verification are pending.
