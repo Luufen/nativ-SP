@@ -426,6 +426,7 @@ static SDL_GPUDevice *create_gpu_device(void) {
 		{ const char *lp = getenv("RECOMP_GPU_LOW_POWER"); if (lp && *lp && *lp != '0') SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, true); }   /* (RECOMP_GPU_LOW_POWER=1: SDL picks an integrated GPU where there's one beside a discrete one: a laptop's Radeon, for testing) */
 		SDL_SetPointerProperty(p, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vo);
 		d = SDL_CreateGPUDeviceWithProperties(p);
+		if (!d) fprintf(stderr, "    gpu: Vulkan device with robustBufferAccess and fragmentStoresAndAtomics failed: %s\n", SDL_GetError());
 		SDL_DestroyProperties(p);
 		vk_fragment_stores = d != 0;
 	}
@@ -435,6 +436,7 @@ static SDL_GPUDevice *create_gpu_device(void) {
 #else
 	if (!d) d = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL, false, 0);
 #endif
+	if (!d) fprintf(stderr, "    gpu: SDL default device creation failed: %s\n", SDL_GetError());
 	return d;
 }
 
@@ -442,6 +444,11 @@ void *gfx_gpu_create_device(void) {
 #ifdef __ANDROID__
 	const char *loader = getenv("NATIV_CUSTOM_VULKAN") ? getenv("SDL_VULKAN_LIBRARY") : NULL;
 	if (loader) SDL_SetHintWithPriority(SDL_HINT_VULKAN_LIBRARY, loader, SDL_HINT_OVERRIDE);
+	/* SDL reports per-device Vulkan rejection reasons at verbose priority in logcat. */
+	SDL_LogPriority gpu_log_priority = SDL_GetLogPriority(SDL_LOG_CATEGORY_GPU);
+	SDL_SetLogPriority(SDL_LOG_CATEGORY_GPU, SDL_LOG_PRIORITY_VERBOSE);
+	fprintf(stderr, "    gpu: creating Android device with %s Vulkan driver (Android API %d, SDL %d)\n",
+	        loader ? "custom" : "system", SDL_GetAndroidSDKVersion(), SDL_GetVersion());
 #endif
 	SDL_GPUDevice *d = create_gpu_device();
 #ifdef __ANDROID__
@@ -450,6 +457,7 @@ void *gfx_gpu_create_device(void) {
 		SDL_SetHintWithPriority(SDL_HINT_VULKAN_LIBRARY, "libvulkan.so", SDL_HINT_OVERRIDE);
 		d = create_gpu_device();
 	}
+	SDL_SetLogPriority(SDL_LOG_CATEGORY_GPU, gpu_log_priority);
 #endif
 #ifdef RECOMP_MTL_ARCHIVE
 	if (d && (SDL_GetGPUShaderFormats(d) & SDL_GPU_SHADERFORMAT_METALLIB) && msl_cache_dir() && !msl_salt()) mtl_archive_on = mtl_archive_open(msl_cache_dir(), msl_lib_store);
@@ -6771,6 +6779,8 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 	static int stats = -1; if (stats < 0) stats = getenv("RECOMP_GPU_STATS") != 0;
 	render_scale_init();
 	hud_note_present(base);
+	/* Completion adds the display thread's pre-wait to the total and clears it. */
+	const uint64_t readback_prewait_us = prewait_us;
 	if (gpu()) { batch_flush("present"); readbacks_complete_at_present(); vis_complete(0); }   /* normally empty: the scene's end flushed; the CPU reads its readbacks from the next frame on */
 	if (gpu() && fence_stats_on()) fence_stats_present();
 	if (stats) {
@@ -6778,6 +6788,8 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 		for (int i = 0; i < n_fallback_why; i++) fprintf(stderr, "%s %u %s", i ? "," : ":", fallback_why[i].n, fallback_why[i].why);
 		fprintf(stderr, "\n    gpu time: %.1f ms = setup %.1f + vertex fetch %.1f (%u ring wraps) + shaders %.1f (%u built) + pipelines %.1f + vertex upload %.1f + texture binding %.1f (hash %.1f, upload %.1f [%u textures, %u as BC blocks], target sync %.1f, views %.1f) + scene target upload %.1f + pass %.1f + submit %.1f + other %.1f [map %.1f acquire %.1f]\n",
 		        t_total / 1e3, t_setup / 1e3, t_vfetch / 1e3, n_vring_wraps, t_shader / 1e3, n_shader_builds, t_pipe / 1e3, t_vbuf / 1e3, t_bind / 1e3, t_texhash / 1e3, t_texup / 1e3, n_tex_uploads, n_tex_bc, t_tsync / 1e3, t_view / 1e3, t_scene_sync / 1e3, t_pass / 1e3, t_submit / 1e3, ((double)t_total - (double)(t_setup + t_vfetch + t_shader + t_pipe + t_vbuf + t_bind + t_scene_sync + t_pass + t_submit)) / 1e3, t_map / 1e3, t_acq / 1e3);   /* signed: the syncs at present/guest-write time are outside t_total */
+		fprintf(stderr, "    gpu readbacks: %u pending, %.2f ms total fence wait (%.2f ms outside renderer lock before present)\n",
+		        (unsigned)nreadbacks, t_readback_wait / 1e3, readback_prewait_us / 1e3);
 		{	uint32_t wf = 0, wm = 0, wp = 0; gwatch_stats(&wf, &wm, &wp);   /* change detection (get_texture): its time is the "hash" bucket above */
 			fprintf(stderr, "    gpu visibility: %u queries, %u SET tests answered visible unseen; %u notifications held for their counts (%u completed by the game's wait, %u by the poller)\n", n_vis_queries, n_vis_unknown, n_def, n_def_wait, n_def_poll);
 			n_vis_queries = n_vis_unknown = 0; n_def = n_def_wait = n_def_poll = 0;

@@ -1171,6 +1171,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 	int scale = getenv("RECOMP_SCALE") ? atoi(getenv("RECOMP_SCALE")) : 1;
 	if (scale < 1) scale = 1;
 	{ const char *name = getenv("RECOMP_GAME_NAME"); win = SDL_CreateWindow(name && *name ? name : "Project Nativ", 960 * scale, 544 * scale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY); }
+	if (!win) fprintf(stderr, "    window: SDL window creation failed: %s\n", SDL_GetError());
 	{	/* the app icon (assets/brand): the install's, as vitarecomp run names it (an AppImage's moves on every start), else
 		 * the one the build saw */
 		const char *ip = getenv("RECOMP_ICON");
@@ -1181,7 +1182,15 @@ void window_run(void *(*fn)(void *), void *arg) {
 	}
 	SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 	{ extern void *gfx_gpu_create_device(void); gpu = gfx_gpu_create_device(); }
-	if (gpu) SDL_ClaimWindowForGPUDevice(gpu, win);
+	if (gpu) {
+		if (SDL_ClaimWindowForGPUDevice(gpu, win)) {
+			fprintf(stderr, "    window: GPU swapchain claimed\n");
+		} else {
+			fprintf(stderr, "    window: GPU swapchain claim failed: %s\n", SDL_GetError());
+			SDL_DestroyGPUDevice(gpu);
+			gpu = NULL;
+		}
+	}
 	if (gpu) {
 		/* the swapchain's present mode. On Vulkan, mailbox where the display has it: with vsync (fifo) this loop's submit
 		 * waits for the swapchain image on the GPU's one queue, and every scene the game submits after it waits out the
@@ -1209,7 +1218,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 		if (frames_in_flight < 1) frames_in_flight = 1; if (frames_in_flight > 3) frames_in_flight = 3;
 		if (!SDL_SetGPUAllowedFramesInFlight(gpu, (Uint32)frames_in_flight)) { fprintf(stderr, "frames in flight %d refused (%s): SDL's 2\n", frames_in_flight, SDL_GetError()); frames_in_flight = 2; }
 	}
-	if (!gpu) fprintf(stderr, "no GPU device (%s): presenting nothing\n", SDL_GetError());
+	if (!gpu) fprintf(stderr, "    window: GPU presentation unavailable\n");
 	/* the overlay's own settings (its Display page), read once here the same way render_scale_init
 	 * (gfx_gpu.c) reads "render_scale": the environment doesn't override these two, there being no
 	 * scripted test that cares what the window looks like */
@@ -1227,6 +1236,8 @@ void window_run(void *(*fn)(void *), void *arg) {
 	SDL_Gamepad *pad = 0;
 	int pad_back = 0, pad_start = 0, pad_combo_latch = 0, pad_start_solo = 0;   /* (U12c) solo: Start pressed and released with no Select */
 	uint64_t last_overlay_t = 0;
+	int command_error_logged = 0, acquire_error_logged = 0, submit_error_logged = 0;
+	int first_frame_submitted = 0;
 	active = 1;
 	Game g = {fn, arg};
 	pthread_t t;
@@ -1669,7 +1680,11 @@ void window_run(void *(*fn)(void *), void *arg) {
 		}
 		uint64_t t_blit0 = now_us();
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
-		if (!cmd) continue;
+		if (!cmd) {
+			if (!command_error_logged) fprintf(stderr, "    window: GPU command buffer acquisition failed: %s\n", SDL_GetError());
+			command_error_logged = 1;
+			continue;
+		}
 		uint64_t t_blit1 = now_us();   /* the swapchain wait below is vsync, not a cost metrics.c should count */
 		/* this loop's frame two submits back is finished before SDL's acquire below looks at its own
 		 * in-flight fence (SDL allows two frames in flight: that fence is this frame's or an older one):
@@ -1702,6 +1717,10 @@ void window_run(void *(*fn)(void *), void *arg) {
 		SDL_GPUTexture *swap = 0;
 		uint32_t ww = 0, wh = 0;
 		int got_swap = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, win, &swap, &ww, &wh);
+		if (!got_swap && !acquire_error_logged) {
+			fprintf(stderr, "    window: GPU swapchain texture acquisition failed: %s\n", SDL_GetError());
+			acquire_error_logged = 1;
+		}
 		uint64_t t_blit2 = now_us();
 		metrics_add_window_acquire(t_blit2 - t_blit1);   /* (the performance log's acquire_ms: what the swapchain made this loop wait) */
 		if (acq_unlock) gfx_lock_enter();
@@ -1731,7 +1750,8 @@ void window_run(void *(*fn)(void *), void *arg) {
 			SDL_UploadToGPUTexture(cp, &src, &dst, true);
 			SDL_EndGPUCopyPass(cp);
 		}
-		if (got_swap && swap && (gsrc || src_tex)) {
+		const int has_picture = got_swap && swap && (gsrc || src_tex);
+		if (has_picture) {
 			/* the 960x544-aspect frame inside the (resizable) window, in whichever aspect mode the
 			 * overlay's Display page picked (present_rect, above: fit/stretch/fill) */
 			uint32_t sw = gsrc ? gw : stw, sh = gsrc ? gh : sth;
@@ -1783,7 +1803,16 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (rear_in_play) { float x0, y0, x1, y1; touch_to_point(0, REAR_Y0, &x0, &y0); touch_to_point(1920, REAR_Y1 + 1, &x1, &y1); rear[0] = x0; rear[1] = y0; rear[2] = x1 - x0; rear[3] = y1 - y0; }
 			overlay_marks(cmd, swap, ww, wh, dt, mk, nm, rear);
 		}
-		frame_fence[frame_fi] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); frame_fi = (frame_fi + 1) % 3;   /* vsync via the swapchain paces this loop; the fence is for the poll above, frames_in_flight on */
+		SDL_GPUFence *submitted = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+		frame_fence[frame_fi] = submitted; frame_fi = (frame_fi + 1) % 3;   /* vsync via the swapchain paces this loop; the fence is for the poll above, frames_in_flight on */
+		if (!submitted && !submit_error_logged) {
+			fprintf(stderr, "    window: GPU frame submission failed: %s\n", SDL_GetError());
+			submit_error_logged = 1;
+		} else if (submitted && !first_frame_submitted && has_picture) {
+			fprintf(stderr, "    window: first frame submitted to GPU swapchain (%ux%u, %s source)\n",
+			        ww, wh, gsrc ? "GPU" : "CPU");
+			first_frame_submitted = 1;
+		}
 		if (wlock) gfx_lock_leave();
 		uint64_t t_blit3 = now_us();
 		{	/* each newly shown GPU frame: the flip -> submit time, plus the compositor and scan-out estimate,
