@@ -96,6 +96,8 @@ class Fn:
         self.pc_off = 8 if arm else 4     # a PC read sees the instruction's address + 8 (ARM) or + 4 (Thumb)
         self.tbit = 0 if arm else 1       # what a call's return address carries
         self.lines, self.unimpl = [], []
+        self.aliases = []
+        self.shared_body = False
         if share is not None:   # another entry into share's code: the same instructions
             self.iaddrs, self.calls, self.ordered = share.iaddrs, share.calls, share.ordered
             return
@@ -1478,13 +1480,24 @@ class Fn:
             out.append(i)
         return out, None
 
-    def _build(self):
-        lines = [f"void fn_{self.entry:08x}(Cpu *c) {{"]
-        lines.append(f"\tENTER(c, 0x{self.entry:x}u);")
-        hook = HOOKS.get(self.entry)
+    @staticmethod
+    def entry_lines(entry):
+        lines = [f"void fn_{entry:08x}(Cpu *c) {{", f"\tENTER(c, 0x{entry:x}u);"]
+        hook = HOOKS.get(entry)
         if hook:
             lines.append(f"\trecomp_hook_{hook}(c);   /* --hooks: before the body, can change c->r / c->vfp */")
-        if self.insns and self.insns[0].address != self.entry:
+        return lines
+
+    def _build(self):
+        if self.aliases:
+            body_name = f"body_{self.entry:08x}"
+            lines = [f"static __attribute__((noinline)) void {body_name}(Cpu *c, uint32_t entry) {{",
+                     "\tswitch (entry) {"]
+            lines.extend(f"\tcase 0x{entry:x}u: goto L_{entry:08x};" for entry in self.aliases)
+            lines.extend((f"\tdefault: goto L_{self.entry:08x};", "\t}"))
+        else:
+            lines = self.entry_lines(self.entry)
+        if not self.aliases and self.insns and self.insns[0].address != self.entry:
             lines.append(f"\tgoto L_{self.entry:08x};   /* an entry inside another function's code */")
         body = self.prefix + ([None] if self.prefix else []) + self.insns
         for i in body:
@@ -1508,18 +1521,19 @@ class Fn:
         lines.append("\treturn;")
         # computed jumps (an indirect branch inside the function, a table recomp could not read) land on any
         # instruction of the function; a function without one gets no such switch (a quarter of all lines, BUILD-03)
-        if not any("JUMP(" in l or "goto jump" in l for l in lines):
-            lines.append("}")
-            return lines
-        lines.append("jump:")
-        lines.append("\tswitch (c->r[15]) {")
-        for i in self.prefix + self.insns:
-            lines.append(f"\tcase 0x{i.address:x}u: goto L_{i.address:08x};")
-        # a computed jump to another function's entry (a table case that is a split-off entry: libSceFt2's FreeType
-        # interpreter, AUTO-01 GR-11) is a tail call: run it and return, as the branch would; anything else asserts
-        lines.append("\tdefault: { GuestFn f = recomp_lookup_here(c->r[15]); if (f) { f(c); return; } } recomp_unimplemented(c, c->r[15]); return;")
-        lines.append("\t}")
+        if any("JUMP(" in l or "goto jump" in l for l in lines):
+            lines.append("jump:")
+            lines.append("\tswitch (c->r[15]) {")
+            for i in self.prefix + self.insns:
+                lines.append(f"\tcase 0x{i.address:x}u: goto L_{i.address:08x};")
+            # A computed jump to another function's entry is a tail call. Anything else asserts.
+            lines.append("\tdefault: { GuestFn f = recomp_lookup_here(c->r[15]); if (f) { f(c); return; } } recomp_unimplemented(c, c->r[15]); return;")
+            lines.append("\t}")
         lines.append("}")
+        if self.aliases:
+            for entry in [self.entry, *self.aliases]:
+                lines.extend(self.entry_lines(entry))
+                lines.extend((f"\t{body_name}(c, 0x{entry:x}u);", "}"))
         return lines
 
 
@@ -1675,9 +1689,16 @@ def main():
             a = v & ~1
             if ((v & 1) or v in arm_starts) and a in starts and a not in eset and a not in stubs:
                 alt.add(a)
+    shareable = {f.entry for f in fns if f.entry in f.iaddrs}
     for a in sorted(alt):
         eset.add(a)
-        fns.append(Fn(a, starts[a].src, eset, arm=starts[a].arm, share=starts[a]))
+        owner = starts[a]
+        alias = Fn(a, owner.src, eset, arm=owner.arm, share=owner)
+        # An owner that needs a separate overlapping decode prefix keeps its old entry bodies.
+        if owner.entry in shareable:
+            owner.aliases.append(a)
+            alias.shared_body = True
+        fns.append(alias)
     # small functions only reached through a pointer (a virtual method in a .rodata vtable) can sit
     # in a gap no Ghidra body covers: a Thumb pointer into such a gap gets a function decoded from
     # there to the next body, when that decodes cleanly to a return
@@ -1792,6 +1813,8 @@ def main():
     scratch = base + ".bodies.tmp" if nsplit else None
     with (open(scratch, "w+b") if nsplit else open(os.devnull, "wb")) as tmp:
         for f in fns:
+            if f.shared_body:
+                continue
             body = f.build()
             total += len(f.iaddrs)
             bad += f.unimpl
