@@ -132,7 +132,7 @@ int main(void) {
 
 	/* part B at 2560x1600 */
 	set_window(2560, 1600);
-	osb_layout(&L, 2560, 1600, 1.0f);
+	osb_layout(&L, 2560, 1600, 1.0f, 0);
 	osb_pad_reset(&fed);
 
 	/* B1 (the reported failure, the host as it was): a finger on the on-screen Cross answers nothing */

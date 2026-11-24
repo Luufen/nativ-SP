@@ -1398,7 +1398,7 @@ static void build_osb(ImDrawList *dl) {
 	if (g_force_osb) { shown = true; held = bits = 0; size = (float)settings_float("osb_size", 1.0); }
 	if (!shown || g_intro) return;
 	const ImVec2 ds = ImGui::GetIO().DisplaySize;
-	OsbLayout L; osb_layout(&L, ds.x, ds.y, size);
+	OsbLayout L; osb_layout(&L, ds.x, ds.y, size, OSB_PLATFORM_MENU && !overlay_dialog_active());
 	const float u = L.unit, lw = u * 0.045f > 1.5f ? u * 0.045f : 1.5f;
 	const ImU32 fill = IM_COL32(16, 18, 24, 96), lit = IM_COL32(255, 255, 255, 120), edge = IM_COL32(255, 255, 255, 150), ink = IM_COL32(255, 255, 255, 215);
 	ImFont *font = ImGui::GetFont(); const float fs = u * 0.38f;
@@ -1408,6 +1408,7 @@ static void build_osb(ImDrawList *dl) {
 	};
 	for (int i = 0; i < OSB_N; i++) {
 		const OsbCtrl &c = L.c[i]; const bool on = (held >> i) & 1u;
+		if (c.w <= 0.0f) continue;
 		const ImVec2 mid(c.x + c.w * 0.5f, c.y + c.h * 0.5f);
 		if (i == OSB_DPAD) {   /* a plus of four arms, each lit by its direction */
 			const float a = u * 0.5f;
@@ -1430,13 +1431,20 @@ static void build_osb(ImDrawList *dl) {
 			ImVec2 kp = mid;
 			if (on) { float dx = knob[2 * k] - mid.x, dy = knob[2 * k + 1] - mid.y; const float d = std::sqrt(dx * dx + dy * dy), lim = r - u * 0.55f; if (d > lim && d > 0) { dx *= lim / d; dy *= lim / d; } kp = ImVec2(mid.x + dx, mid.y + dy); }
 			dl->AddCircleFilled(kp, u * 0.55f, on ? lit : IM_COL32(255, 255, 255, 60), 32); dl->AddCircle(kp, u * 0.55f, edge, 32, lw);
-		} else if (c.round) {   /* a face button: a circle with its shape */
+		} else if (c.round) {   /* a round button with its icon */
 			const float r = c.w * 0.5f, s = u * 0.2f;
 			dl->AddCircleFilled(mid, r, on ? lit : fill, 32); dl->AddCircle(mid, r, edge, 32, lw);
 			if (i == OSB_TRIANGLE) dl->AddTriangle(ImVec2(mid.x, mid.y - s * 1.1f), ImVec2(mid.x - s * 1.1f, mid.y + s * 0.8f), ImVec2(mid.x + s * 1.1f, mid.y + s * 0.8f), ink, lw * 1.4f);
 			if (i == OSB_CIRCLE) dl->AddCircle(mid, s, ink, 24, lw * 1.4f);
 			if (i == OSB_CROSS) { dl->AddLine(ImVec2(mid.x - s, mid.y - s), ImVec2(mid.x + s, mid.y + s), ink, lw * 1.4f); dl->AddLine(ImVec2(mid.x + s, mid.y - s), ImVec2(mid.x - s, mid.y + s), ink, lw * 1.4f); }
 			if (i == OSB_SQUARE) dl->AddRect(ImVec2(mid.x - s * 0.9f, mid.y - s * 0.9f), ImVec2(mid.x + s * 0.9f, mid.y + s * 0.9f), ink, 0.0f, 0, lw * 1.4f);
+			if (i == OSB_MENU) {
+				for (int row = -1; row <= 1; row++) {
+					const float y = mid.y + row * s * 0.75f;
+					dl->AddLine(ImVec2(mid.x - s, y), ImVec2(mid.x + s, y), ink, lw);
+					dl->AddCircleFilled(ImVec2(mid.x + (row == 0 ? s : -s) * 0.45f, y), lw * 1.05f, ink, 12);
+				}
+			}
 		} else {   /* L, R, Select, Start: a rounded box with its name */
 			dl->AddRectFilled(ImVec2(c.x, c.y), ImVec2(c.x + c.w, c.y + c.h), on ? lit : fill, c.h * 0.45f);
 			dl->AddRect(ImVec2(c.x, c.y), ImVec2(c.x + c.w, c.y + c.h), edge, c.h * 0.45f, 0, lw);

@@ -15,13 +15,14 @@ static int overlap(const OsbCtrl *a, const OsbCtrl *b) {
 static float cxof(const OsbCtrl *c) { return c->x + c->w * 0.5f; }
 static float cyof(const OsbCtrl *c) { return c->y + c->h * 0.5f; }
 
-static void layout_checks(float w, float h, float size) {
-	OsbLayout L; osb_layout(&L, w, h, size);
+static void layout_checks(float w, float h, float size, int menu) {
+	OsbLayout L; osb_layout(&L, w, h, size, menu);
 	CHECK(L.unit >= 44.0f || L.unit >= h / 9.0f - 0.01f);   /* a finger's target, unless the window is too small for it */
-	for (int i = 0; i < OSB_N; i++) {
+	const int controls = menu ? OSB_N : OSB_MENU;
+	for (int i = 0; i < controls; i++) {
 		const OsbCtrl *c = &L.c[i];
 		CHECK(c->x >= 0 && c->y >= 0 && c->x + c->w <= w + 0.01f && c->y + c->h <= h + 0.01f);   /* on screen */
-		for (int j = i + 1; j < OSB_N; j++) if (overlap(c, &L.c[j])) { printf("  %gx%g: controls %d and %d overlap\n", w, h, i, j); CHECK(0); }
+		for (int j = i + 1; j < controls; j++) if (overlap(c, &L.c[j])) { printf("  %gx%g: controls %d and %d overlap\n", w, h, i, j); CHECK(0); }
 		/* each control's centre hits itself (the D-pad's centre is its dead zone, but still the D-pad) */
 		CHECK(osb_hit(&L, cxof(c), cyof(c)) == i);
 	}
@@ -30,6 +31,17 @@ static void layout_checks(float w, float h, float size) {
 	CHECK(cxof(&L.c[OSB_CROSS]) > w * 0.5f && cxof(&L.c[OSB_RSTICK]) > w * 0.5f && cxof(&L.c[OSB_R]) > w * 0.5f);
 	/* the screen's middle is the game's (front touch) */
 	CHECK(osb_hit(&L, w * 0.5f, h * 0.4f) == -1);
+	const OsbCtrl *select = &L.c[OSB_SELECT], *start = &L.c[OSB_START], *settings = &L.c[OSB_MENU];
+	if (menu) {
+		CHECK(settings->round && settings->w == settings->h && settings->w > 0.0f);
+		CHECK(select->x + select->w < settings->x && settings->x + settings->w < start->x);
+		CHECK(fabsf(cxof(settings) - w * 0.5f) < 0.01f && fabsf(cyof(settings) - cyof(select)) < 0.01f);
+		CHECK(!osb_inside(settings, settings->x, settings->y, 0));
+		CHECK(osb_bits(&L, OSB_MENU, cxof(settings), cyof(settings)) == 0);
+	} else {
+		CHECK(osb_hit(&L, w * 0.5f, cyof(select)) == -1);
+		CHECK(fabsf(start->x - w * 0.5f - 0.1f * L.unit) < 0.01f);
+	}
 }
 
 /* the rule of UI-01n, as it was (no pad argument): the fail-before of UI-02e */
@@ -37,11 +49,14 @@ static int osb_visible_ui01n(int mode, int touch_last) { return mode == OSB_ON |
 
 int main(void) {
 	CHECK(OSB_BIT_CROSS == 0x4000 && OSB_BIT_START == 0x8 && OSB_BIT_L == 0x100 && OSB_BIT_UP == 0x10);   /* (sceCtrl's values) */
-	const float sizes[][2] = {{1280, 800}, {1280, 720}, {1920, 1080}, {960, 544}, {640, 400}, {2560, 1600}, {800, 1280}};
+	const float sizes[][2] = {{1280, 800}, {1280, 720}, {1920, 1080}, {960, 544}, {640, 400}, {2560, 1600}, {800, 1280}, {844, 390}};
 	for (unsigned i = 0; i < sizeof sizes / sizeof sizes[0]; i++)
-		for (float s = 0.75f; s <= 1.5f; s += 0.25f) layout_checks(sizes[i][0], sizes[i][1], s);
+		for (float s = 0.75f; s <= 1.5f; s += 0.25f) {
+			layout_checks(sizes[i][0], sizes[i][1], s, 0);
+			layout_checks(sizes[i][0], sizes[i][1], s, 1);
+		}
 
-	OsbLayout L; osb_layout(&L, 1280, 800, 1.0f);
+	OsbLayout L; osb_layout(&L, 1280, 800, 1.0f, 0);
 	CHECK(L.unit > 67.9f && L.unit < 68.1f);   /* the Deck: 800 * 0.085 */
 	/* the face buttons in the Vita's diamond: Triangle up, Cross down, Square left, Circle right */
 	CHECK(cyof(&L.c[OSB_TRIANGLE]) < cyof(&L.c[OSB_CROSS]) && cxof(&L.c[OSB_SQUARE]) < cxof(&L.c[OSB_CIRCLE]));
@@ -70,9 +85,9 @@ int main(void) {
 		osb_stick(s, cxof(s) - 5 * r, cyof(s), &sx, &sy); CHECK(sx == 1 && sy == 128);   /* beyond the ring: full tilt */
 		osb_stick(s, cxof(s) + r * 0.5f, cyof(s) + r * 0.5f, &sx, &sy); CHECK(sx > 185 && sx < 195 && sy > 185 && sy < 195); }
 	/* size: bigger, clamped */
-	{	OsbLayout B; osb_layout(&B, 1280, 800, 1.5f); CHECK(B.unit > L.unit && B.unit <= 800 / 9.0f + 0.01f);
-		OsbLayout C; osb_layout(&C, 1280, 800, 9.0f); CHECK(C.unit == B.unit);
-		OsbLayout D; osb_layout(&D, 1280, 800, 0.0f); CHECK(D.unit == L.unit); }   /* (unset: the default) */
+	{	OsbLayout B; osb_layout(&B, 1280, 800, 1.5f, 0); CHECK(B.unit > L.unit && B.unit <= 800 / 9.0f + 0.01f);
+		OsbLayout C; osb_layout(&C, 1280, 800, 9.0f, 0); CHECK(C.unit == B.unit);
+		OsbLayout D; osb_layout(&D, 1280, 800, 0.0f, 0); CHECK(D.unit == L.unit); }   /* (unset: the default) */
 	/* the setting and when they show */
 	CHECK(osb_mode_parse("on") == OSB_ON && osb_mode_parse("off") == OSB_OFF && osb_mode_parse("auto") == OSB_AUTO);
 	CHECK(osb_mode_parse(0) == OSB_AUTO && osb_mode_parse("junk") == OSB_AUTO);

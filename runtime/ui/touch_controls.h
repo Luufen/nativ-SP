@@ -4,7 +4,8 @@
  * (which draws them), both from the window's size in points, so a finger always presses what is drawn under it.
  *
  * Layout (landscape, the Vita's own arrangement): L and R in the top corners; the D-pad on the left above the left stick;
- * the face buttons on the right above the right stick; Select and Start at the bottom centre. The unit is a fraction of the
+ * the face buttons on the right above the right stick; Select and Start at the bottom centre, with a menu button on Android.
+ * The unit is a fraction of the
  * window's short side (times "osb_size"), never under 44 points (a finger's target), and capped so the columns fit the
  * height. Fingers that land elsewhere stay the Vita's front touch screen.
  *
@@ -23,13 +24,18 @@
 enum { OSB_BIT_SELECT = 0x1, OSB_BIT_START = 0x8, OSB_BIT_UP = 0x10, OSB_BIT_RIGHT = 0x20, OSB_BIT_DOWN = 0x40, OSB_BIT_LEFT = 0x80,
        OSB_BIT_L = 0x100, OSB_BIT_R = 0x200, OSB_BIT_TRIANGLE = 0x1000, OSB_BIT_CIRCLE = 0x2000, OSB_BIT_CROSS = 0x4000, OSB_BIT_SQUARE = 0x8000 };
 
-enum { OSB_DPAD, OSB_TRIANGLE, OSB_CIRCLE, OSB_CROSS, OSB_SQUARE, OSB_L, OSB_R, OSB_SELECT, OSB_START, OSB_LSTICK, OSB_RSTICK, OSB_N };
+enum { OSB_DPAD, OSB_TRIANGLE, OSB_CIRCLE, OSB_CROSS, OSB_SQUARE, OSB_L, OSB_R, OSB_SELECT, OSB_START, OSB_LSTICK, OSB_RSTICK, OSB_MENU, OSB_N };
 enum { OSB_OFF, OSB_AUTO, OSB_ON };
+#ifdef __ANDROID__
+enum { OSB_PLATFORM_MENU = 1 };
+#else
+enum { OSB_PLATFORM_MENU = 0 };
+#endif
 
 typedef struct {
 	float x, y, w, h;   /* the box, window points */
 	int round;          /* drawn and hit as a circle (the box's inscribed one) */
-	unsigned bit;       /* the button it presses (0: the D-pad, by where the finger is; the sticks) */
+	unsigned bit;       /* the guest button it presses (0 for directional controls and the host menu) */
 	const char *label;  /* Latin-1 */
 } OsbCtrl;
 typedef struct { OsbCtrl c[OSB_N]; float unit; } OsbLayout;
@@ -38,7 +44,7 @@ static inline float osb_minf(float a, float b) { return a < b ? a : b; }
 static inline float osb_maxf(float a, float b) { return a > b ? a : b; }
 
 /* the layout for a window of w x h points; size: "osb_size" (0.75..1.5, 1 the default) */
-static inline void osb_layout(OsbLayout *L, float w, float h, float size) {
+static inline void osb_layout(OsbLayout *L, float w, float h, float size, int menu) {
 	if (!(size >= 0.75f)) size = size > 0 ? 0.75f : 1.0f;
 	if (size > 1.5f) size = 1.5f;
 	float u = osb_minf(w, h) * 0.085f * size;
@@ -61,9 +67,14 @@ static inline void osb_layout(OsbLayout *L, float w, float h, float size) {
 	c[OSB_CROSS]    = (OsbCtrl){fx - 0.5f * u, cy + 0.5f * u, u, u, 1, OSB_BIT_CROSS, "Cross"};
 	c[OSB_SQUARE]   = (OsbCtrl){fx - 1.5f * u, cy - 0.5f * u, u, u, 1, OSB_BIT_SQUARE, "Square"};
 	c[OSB_CIRCLE]   = (OsbCtrl){fx + 0.5f * u, cy - 0.5f * u, u, u, 1, OSB_BIT_CIRCLE, "Circle"};
-	/* Select and Start: pills at the bottom centre */
-	c[OSB_SELECT] = (OsbCtrl){w * 0.5f - 2.1f * u, h - m - 0.8f * u, 2.0f * u, 0.8f * u, 0, OSB_BIT_SELECT, "Select"};
-	c[OSB_START]  = (OsbCtrl){w * 0.5f + 0.1f * u, h - m - 0.8f * u, 2.0f * u, 0.8f * u, 0, OSB_BIT_START, "Start"};
+	/* Select and Start keep their vertical centre when the host menu is between them. */
+	const float cx = w * 0.5f, sy = h - m - 0.8f * u, gap = (menu ? 0.62f : 0.1f) * u;
+	c[OSB_SELECT] = (OsbCtrl){cx - gap - 2.0f * u, sy, 2.0f * u, 0.8f * u, 0, OSB_BIT_SELECT, "Select"};
+	c[OSB_START]  = (OsbCtrl){cx + gap, sy, 2.0f * u, 0.8f * u, 0, OSB_BIT_START, "Start"};
+	if (menu) {
+		const float r = 0.46f * u;
+		c[OSB_MENU] = (OsbCtrl){cx - r, sy + 0.4f * u - r, 2.0f * r, 2.0f * r, 1, 0, ""};
+	}
 }
 
 static inline int osb_inside(const OsbCtrl *c, float x, float y, float grow) {

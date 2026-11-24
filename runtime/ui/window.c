@@ -560,19 +560,24 @@ static int screen_touch_device(const SDL_Event *e) {   /* a touchscreen's finger
 }
 /* (UI-01n) a finger on an on-screen button: held there until it lifts, never a touch on the panel. 1: the finger is (or
  * was, as it lifts) on one -- taken; 0: not theirs */
-static int osb_finger(const SDL_Event *e, float mx, float my, int w, int h) {
+static int osb_finger(const SDL_Event *e, float mx, float my, int w, int h, int menu) {
 	const int shown = window_osb_shown();
 	if (e->type == SDL_EVENT_FINGER_DOWN) osb_touch_last = 1;   /* (auto: from the next frame on they show; this finger is the game's) */
 	for (int j = 0; j < ST_FINGERS; j++) if (osb_fdown[j] && osb_fid[j] == e->tfinger.fingerID) {
-		if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) osb_fdown[j] = 0;
-		else {
+		if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) {
+			osb_fdown[j] = 0;
+			if (menu && osb_fctl[j] == OSB_MENU && e->type == SDL_EVENT_FINGER_UP) {
+				osb_layout(&osb_L, (float)w, (float)h, osb_size, menu);
+				if (osb_inside(&osb_L.c[OSB_MENU], mx, my, 0)) overlay_open();
+			}
+		} else {
 			osb_fx[j] = mx; osb_fy[j] = my;
 			if (osb_fctl[j] >= OSB_TRIANGLE && osb_fctl[j] <= OSB_SQUARE) { const int c = osb_hit(&osb_L, mx, my); if (c >= OSB_TRIANGLE && c <= OSB_SQUARE) osb_fctl[j] = c; }   /* (slid onto another face button) */
 		}
 		osb_update(); return 1;
 	}
 	if (e->type == SDL_EVENT_FINGER_DOWN && shown) {
-		osb_layout(&osb_L, (float)w, (float)h, osb_size);
+		osb_layout(&osb_L, (float)w, (float)h, osb_size, menu);
 		const int c = osb_hit(&osb_L, mx, my);
 		if (c >= 0) for (int j = 0; j < ST_FINGERS; j++) if (!osb_fdown[j]) {
 			osb_fdown[j] = 1; osb_fid[j] = e->tfinger.fingerID; osb_fctl[j] = c; osb_fx[j] = mx; osb_fy[j] = my;
@@ -597,7 +602,7 @@ static void osb_dlg_feed(void) { osb_pad_feed(&osb_dlg_fed, osb_buttons, osb_sti
 static void dialog_finger(const SDL_Event *e) {
 	if (!screen_touch_device(e)) return;
 	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
-	if (osb_finger(e, e->tfinger.x * (float)w, e->tfinger.y * (float)h, w, h)) osb_dlg_feed();
+	if (osb_finger(e, e->tfinger.x * (float)w, e->tfinger.y * (float)h, w, h, 0)) osb_dlg_feed();
 }
 /* SDL's touch mouse (the first finger as the pointer) over a shown on-screen button: that press is the button's, not a
  * click on the dialog under it */
@@ -608,14 +613,14 @@ static int dialog_touch_mouse_on_osb(const SDL_Event *e) {
 	else return 0;
 	if (!window_osb_shown()) return 0;
 	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
-	OsbLayout L; osb_layout(&L, (float)w, (float)h, osb_size);
+	OsbLayout L; osb_layout(&L, (float)w, (float)h, osb_size, 0);
 	return osb_hit(&L, x, y) >= 0;
 }
 static void screen_finger(const SDL_Event *e) {
 	if (!screen_touch_device(e)) return;
 	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
 	const float mx = e->tfinger.x * (float)w, my = e->tfinger.y * (float)h;   /* (SDL's finger positions: 0-1 across the window) */
-	if (osb_finger(e, mx, my, w, h)) return;
+	if (osb_finger(e, mx, my, w, h, OSB_PLATFORM_MENU && !overlay_intro_up())) return;
 	int k = -1, free_k = -1;
 	for (int i = 0; i < ST_FINGERS; i++) { if (st_down[i] && st_id[i] == e->tfinger.fingerID) k = i; else if (!st_down[i] && free_k < 0) free_k = i; }
 	if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) { if (k >= 0) st_down[k] = 0; return; }
