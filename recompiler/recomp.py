@@ -105,10 +105,12 @@ class Fn:
             lite = decode(*src)
         self.iaddrs = array("I", (i.address for i in lite))
         self.calls = [(i.mnemonic, t) for i in lite if i.mnemonic in ("bl", "blx") and (t := lite_imm(i)) is not None]
+        branch_targets = {t for i in lite if B_MN.match(i.mnemonic) and (t := lite_imm(i)) is not None}
         # plain branches (b, b<cc>, b.w: tail calls) to another analysis entry, as ("b", target): a B never changes
         # the instruction set, so certain Thumb code's branch target is Thumb like its bl target (PSN-NOVA-JP)
-        self.calls += [("b", t) for i in lite if B_MN.match(i.mnemonic) and (t := lite_imm(i)) is not None
-                       and t != entry and t in entries]
+        self.calls += [("b", t) for t in branch_targets if t != entry and t in entries]
+        branch_targets.difference_update(self.iaddrs)
+        self.external_branches = branch_targets
         self.ordered = ORDERED_LOADS[0] and any(i.mnemonic in SYNC_MN for i in lite)
 
     def reg(self, rid):
@@ -1691,16 +1693,21 @@ def main():
             a = v & ~1
             if ((v & 1) or v in arm_starts) and a in starts and a not in eset and a not in stubs:
                 alt.add(a)
+    analyzed_count = len(fns)
     shareable = {f.entry for f in fns if f.entry in f.iaddrs}
-    for a in sorted(alt):
-        eset.add(a)
-        owner = starts[a]
-        alias = Fn(a, owner.src, eset, arm=owner.arm, share=owner)
-        # An owner that needs a separate overlapping decode prefix keeps its old entry bodies.
-        if owner.entry in shareable:
-            owner.aliases.append(a)
-            alias.shared_body = True
-        fns.append(alias)
+
+    def add_aliases(addresses):
+        for a in sorted(addresses):
+            eset.add(a)
+            owner = starts[a]
+            alias = Fn(a, owner.src, eset, arm=owner.arm, share=owner)
+            # An owner that needs a separate overlapping decode prefix keeps its old entry bodies.
+            if owner.entry in shareable:
+                owner.aliases.append(a)
+                alias.shared_body = True
+            fns.append(alias)
+
+    add_aliases(alt)
     # small functions only reached through a pointer (a virtual method in a .rodata vtable) can sit
     # in a gap no Ghidra body covers: a Thumb pointer into such a gap gets a function decoded from
     # there to the next body, when that decodes cleanly to a return
@@ -1789,6 +1796,16 @@ def main():
         print(f"{narm} ARM functions in gaps (even pointers in vtable rows), counted below")
     if ngap:
         print(f"{ngap} functions in gaps between Ghidra's bodies (reached through pointers)")
+    # A split switch case can be discovered as a gap body. A branch from it back into the
+    # switch needs a lookup entry for the decoded target, just as an interior pointer does.
+    gap_fns = fns[-ngap:] if ngap else []
+    for f in gap_fns:
+        for a in f.iaddrs:
+            starts.setdefault(a, f)
+        if f.entry in f.iaddrs:
+            shareable.add(f.entry)
+    add_aliases({t for f in fns[:analyzed_count] + gap_fns for t in f.external_branches
+                 if t in starts and starts[t].arm == f.arm and t not in eset and t not in stubs})
     for a in sorted(set(HOOKS) - {f.entry for f in fns}):   # a typo, or an address that moved: say so now, not after a run shows nothing changed
         print(f"warning: --hooks {a:#x}:{HOOKS[a]} is not a function entry; that hook will never run")
     insn_addrs = {a for f in fns for a in f.iaddrs} if IHOOKS else set()

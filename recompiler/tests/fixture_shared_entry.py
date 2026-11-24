@@ -12,15 +12,17 @@ RECOMPILER = Path(__file__).resolve().parents[1]
 RECOMP = Path(sys.argv[1]) if len(sys.argv) > 1 else RECOMPILER / "recomp.py"
 ENTRY = 0x81000000
 ALIAS = ENTRY + 2
-CODE = struct.pack("<3H", 0x2005, 0x3001, 0x4770)  # movs r0,#5; adds r0,#1; bx lr
-POINTER = struct.pack("<I", ALIAS | 1)
+BRANCH_TARGET = ENTRY + 4
+BRANCH = ENTRY + 8
+CODE = struct.pack("<5H", 0x2005, 0x3001, 0x4770, 0xBF00, 0xE7FC).ljust(0x48, b"\x00")  # movs; adds; bx lr; gap; b to bx
+POINTERS = struct.pack("<II", ALIAS | 1, BRANCH | 1)
 MODULE = {
     "blocks": [
-        {"start": ENTRY, "size": len(CODE), "init": True, "bytes": CODE.hex()},
-        {"start": ENTRY + 0x100, "size": len(POINTER), "init": True, "bytes": POINTER.hex()},
+        {"start": ENTRY, "size": len(CODE), "init": True, "bytes": CODE.hex(), "name": ".text"},
+        {"start": ENTRY + 0x100, "size": len(POINTERS), "init": True, "bytes": POINTERS.hex()},
     ],
     "functions": {"main": ENTRY},
-    "bodies": [[ENTRY, ENTRY + len(CODE) - 1, ENTRY]],
+    "bodies": [[ENTRY, BRANCH_TARGET + 1, ENTRY]],
     "module": "fixture",
     "relocs": [],
     "exports": [],
@@ -69,6 +71,12 @@ int main(void) {
     assert(entered == 0x81000000u && cpu.r[0] == 6 && entry_count == 1 && hook_count == 0);
     recomp_lookup(0x81000002u)(&cpu);
     assert(entered == 0x81000002u && cpu.r[0] == 8 && entry_count == 2 && hook_count == 1);
+    cpu.r[14] = 0x12345679u;
+    GuestFn branch = recomp_lookup(0x81000008u);
+    assert(branch);
+    branch(&cpu);
+    assert(entered == 0x81000004u && entry_count == 4 && hook_count == 1);
+    assert(cpu.r[0] == 8 && cpu.r[14] == 0x12345679u);
 }
 ''', encoding="utf-8")
     binary = work / "run"
@@ -79,4 +87,4 @@ int main(void) {
     )
     subprocess.run([str(binary)], check=True)
     assert generated.count(f"L_{ALIAS:08x}:") == 1, "alternate entry emitted a duplicate body"
-    print("One translated body, both entries traced, alternate hook ran once")
+    print("Pointer and branch entries share one translated body, preserving hooks and LR")
