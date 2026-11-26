@@ -76,6 +76,13 @@ int main(void) {
 	      RD32(LIST + 32 + 4) == 1 && RD32(LIST + 32 + 8) == 0x33 && RD32(LIST + 12) == 0);
 	check("nothing written past the hits", RD32(LIST + 48) == 0xeeeeeeeeu);
 
+	/* (ISSUE-21) GetParam reports a slot that is there as AVAILABLE, whatever status the game stored (Vita3K 3ab53c9d);
+	 * the stored param is otherwise returned as written. Fail-before: status 1 came back and Terraria deleted its saves. */
+	memset(G(PARAM), 0xcc, SLOT_PARAM_SIZE);
+	check("SlotGetParam on slot 200 (stored status 1) -> 0", call("sceAppUtilSaveDataSlotGetParam", 200, PARAM, 0, 0) == 0);
+	check("  status reads AVAILABLE (0), userParam as stored (0x33)", RD32(PARAM) == 0 && RD32(PARAM + 0x304) == 0x33);
+	check("SlotGetParam on a missing slot -> SLOT_NOT_FOUND", call("sceAppUtilSaveDataSlotGetParam", 7, PARAM, 0, 0) == 0x80100641u);
+
 	scond(0, 2, 10); result_garbage();
 	check("EXIST 2..11 -> hitNum 1 (slot 3)", call("sceAppUtilSaveDataSlotSearch", WORK, SCOND, RES, 0) == 0 && RD32(RES) == 1 && RD32(LIST) == 3);
 	scond(1, 0, 5); result_garbage();
@@ -89,6 +96,28 @@ int main(void) {
 	check("null cond -> PARAMETER", call("sceAppUtilSaveDataSlotSearch", WORK, 0, RES, 0) == 0x80100001u);
 	scond(5, 0, 1);
 	check("unknown search type -> PARAMETER", call("sceAppUtilSaveDataSlotSearch", WORK, SCOND, RES, 0) == 0x80100001u);
+
+	/* (ISSUE-21) sceAppUtilSaveDataDataSave FILE_TRUNCATE (mode 1): written at the offset, then the file ends at offset+size;
+	 * the bytes before the offset stay (Vita3K 3ab53c9d). Terraria saves a world as two mode-1 items, 1 MiB at 0 and the
+	 * rest at 1 MiB. Fail-before: the second item emptied the file first, leaving zeros before its offset. */
+	setenv("RECOMP_SAVE_LATENCY_MS", "0", 1);
+	enum { ITEMS = 0x80004000u, NAME = 0x80004100u, BUFA = 0x80004200u, BUFB = 0x80004300u };
+	strcpy((char *)G(NAME), "W.WLD"); memset(G(BUFA), 'A', 8); memset(G(BUFB), 'B', 4);
+	memset(G(ITEMS), 0, 128);
+	WR32(ITEMS, NAME); WR32(ITEMS + 4, BUFA); WR32(ITEMS + 8, 8); WR64(ITEMS + 16, 0); WR32(ITEMS + 24, 1);
+	WR32(ITEMS + 64, NAME); WR32(ITEMS + 68, BUFB); WR32(ITEMS + 72, 4); WR64(ITEMS + 80, 8); WR32(ITEMS + 88, 1);
+	check("DataSave two mode-1 items (8 B at 0, 4 B at 8) -> 0", call("sceAppUtilSaveDataDataSave", 0, ITEMS, 2, 0) == 0);
+	char wp[256]; snprintf(wp, sizeof wp, "%s/savedata0/W.WLD", dir);
+	char got[32] = {0}; FILE *wf = fopen(wp, "rb"); size_t gn = wf ? fread(got, 1, sizeof got, wf) : 0; if (wf) fclose(wf);
+	check("  the file is AAAAAAAABBBB (12 bytes; the first item kept)", gn == 12 && !memcmp(got, "AAAAAAAABBBB", 12));
+	WR32(ITEMS + 8, 2);   /* one mode-1 item, 2 bytes at 0: the file ends at 2 */
+	check("DataSave one mode-1 item (2 B at 0) -> 0", call("sceAppUtilSaveDataDataSave", 0, ITEMS, 1, 0) == 0);
+	memset(got, 0, sizeof got); wf = fopen(wp, "rb"); gn = wf ? fread(got, 1, sizeof got, wf) : 0; if (wf) fclose(wf);
+	check("  the file is AA (truncated to offset + size)", gn == 2 && !memcmp(got, "AA", 2));
+	WR32(ITEMS + 64 + 24, 0);   /* mode 0 (FILE): 4 B at 8 written, nothing truncated */
+	check("DataSave one mode-0 item (4 B at 8) -> 0", call("sceAppUtilSaveDataDataSave", 0, ITEMS + 64, 1, 0) == 0);
+	memset(got, 0xff, sizeof got); wf = fopen(wp, "rb"); gn = wf ? fread(got, 1, sizeof got, wf) : 0; if (wf) fclose(wf);
+	check("  the file is AA, 6 zero bytes, BBBB (12 bytes)", gn == 12 && !memcmp(got, "AA\0\0\0\0\0\0BBBB", 12));
 
 	char cmd[128]; snprintf(cmd, sizeof cmd, "rm -rf %s", dir); if (system(cmd)) {}
 	printf("%s\n", fails ? "FAILED" : "all passed");

@@ -235,9 +235,13 @@ static void h_save_data_mount(Cpu *c) {
 static void h_save_data_umount(Cpu *c) { (void)c; RET(0); }   /* (mount point): nothing was mounted */
 static void h_save_slot_create(Cpu *c) { RET(slot_write(A0, A1) == 0 ? 0 : 0x80100600u); }   /* (slot id, SceAppUtilSaveDataSlotParam *, mount point) */
 static void h_save_slot_delete(Cpu *c) { char m[1024]; slot_marker(A0, m, sizeof m); RET(unlink(m) == 0 ? 0 : 0x80100641u); }   /* SLOT_NOT_FOUND */
+/* (ISSUE-21) the status (+0) is the system's answer, not what the game stored: a slot that is there reads AVAILABLE (0),
+ * as Vita3K 3ab53c9d SceAppUtil.cpp sceAppUtilSaveDataSlotGetParam. Terraria stores BROKEN (1) in its own param; read
+ * back, it took its slot as broken, asked to delete it (the message dialog answers yes) and wiped every save at start. */
 static void h_save_slot_param(Cpu *c) {   /* (slot id, SceAppUtilSaveDataSlotParam *, mount point) */
 	uint8_t p[SLOT_PARAM_SIZE];
 	if (!slot_read(A0, p)) { RET(0x80100641u); return; }   /* SLOT_NOT_FOUND */
+	memset(p, 0, 4);   /* SCE_APPUTIL_SAVEDATA_SLOT_STATUS_AVAILABLE */
 	if (A1) memcpy(G(A1), p, SLOT_PARAM_SIZE);
 	RET(0);
 }
@@ -299,9 +303,13 @@ static void h_save_data_save(Cpu *c) {
 		for (char *q = hp + strlen(dir); *q; q++) if (*q == '\\') *q = '/';
 		for (char *q = hp + strlen(dir) + 1; *q; q++) if (*q == '/') { *q = 0; mkdir(hp, 0755); *q = '/'; }
 		if (mode == 2) { mkdir(hp, 0755); continue; }   /* a directory */
-		int fd = open(hp, O_WRONLY | O_CREAT | (mode == 1 ? O_TRUNC : 0), 0644);
+		/* (ISSUE-21) FILE_TRUNCATE (1) writes at the offset and then ends the file there (offset + size), as Vita3K 3ab53c9d
+		 * SceAppUtil.cpp: what lies before the offset stays. Opened with O_TRUNC it was emptied first -- Terraria saves a
+		 * world as two items (1 MiB at 0, the rest at 1 MiB, both mode 1): its first MiB was zeros and the world never listed */
+		int fd = open(hp, O_WRONLY | O_CREAT, 0644);
 		if (fd < 0) { fprintf(stderr, "    save %s (mode %u, %u bytes): host open failed: %s\n", path ? (char *)G(path) : "", mode, size, strerror(errno)); continue; }
 		if (buf && size) { gwatch_read_open(buf, size); pwrite(fd, G(buf), size, (off_t)off); }
+		if (mode == 1 && ftruncate(fd, (off_t)(off + size)) < 0) fprintf(stderr, "    save %s: truncate to %llu failed: %s\n", path ? (char *)G(path) : "", (unsigned long long)(off + size), strerror(errno));
 		close(fd);
 		fprintf(stderr, "    save %s: %u bytes at %llu\n", path ? (char *)G(path) : "", size, (unsigned long long)off);
 	}

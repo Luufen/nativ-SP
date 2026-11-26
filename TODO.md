@@ -19,6 +19,7 @@
 - TERRARIA-01, 2026-11-24. Seed the start-game ARM entry 0x810ce498 (missed_function at lr 0x810cdd80). Recompile: 12289 functions. Title regression run exits 0; owner start-game check pending.
 - TERRARIA-01, 2026-11-24. Seed ARM 0x8140a090 (render frame-complete: [+0x108]++, SignalSema([+0x110])) and ARM 0x813c0c58. Analysis had decoded both as a single 2-byte Thumb body, so the emitter produced empty functions and the main thread never got its completion signal. The stock build now reaches the title screen at frame 1100 without RECOMP_FAKE_SEMA.
 - RELEASE-LF18, 2026-11-24. README lists Terraria US 1.11 (PCSE00317) as tested; pack header updated from the pack-init "unverified" note to the owner-tested state.
+- ISSUE-21, 2026-11-26. Terraria saves survive a restart. sceAppUtilSaveDataSlotGetParam reports a slot that exists as AVAILABLE, as Vita3K 3ab53c9d does; the stored BROKEN status had made the game ask to delete its saves, and the auto-confirmed dialog wiped them. DataSave FILE_TRUNCATE now writes at the offset and then truncates to offset+size; before, O_TRUNC zeroed the first MiB of every two-part world. savedata_slot_search_test fails before and passes after; run_ci_tests.sh passes; the owner loaded a world after a restart on the -O2 build. Fork release line only (no upstream PRs).
 
 - TERRARIA-01, 2026-11-24. Direct branches into another compiled body now resolve same-mode instruction labels, including sources discovered as code in gaps. All 23 recompiler fixtures passed. The native run passed the previously unresolved split switch branch.
 
