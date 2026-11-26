@@ -663,3 +663,15 @@ must equal the interpreter's colour words. fail-before: the four "split on" layo
 GPU execution (WSL with mesa-vulkan-drivers; Vulkan-Headers from <https://github.com/KhronosGroup/Vulkan-Headers>):
 
     cc -O1 -g -Wall -D_GNU_SOURCE -DUSSE_REGSPLIT_VK -I <Vulkan-Headers>/include -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_regsplit_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_regsplit_test -lm -ldl && VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json /tmp/usse_regsplit_test
+## The Vulkan pipeline cache file: `vk_pcache_test.c`
+
+ANDROID-PERF-03. Checks `runtime/platform/sdl-patches/nativ_vk_pcache.h`, the file format SDL's patched Vulkan backend
+loads its VkPipelineCache from and saves it to: a file written for a device loads back unchanged with no `.tmp` left;
+a foreign file (vendor, GPU, driver version, pipelineCacheUUID), a flipped payload byte, a truncated, padded, empty,
+garbage or missing file and a bad Vulkan cache header are refused (the cache starts empty); a blob for another device is
+never written; a save that cannot be written fails and leaves the old file. Fail-before: SDL 3.4.16 keeps no pipeline
+cache at all.
+
+    cc -O1 -g -Wall vk_pcache_test.c -o /tmp/vk_pcache_test && /tmp/vk_pcache_test
+
+It prints `all passed` and exits 0.

@@ -1,0 +1,284 @@
+--- a/src/gpu/vulkan/SDL_gpu_vulkan.c
++++ b/src/gpu/vulkan/SDL_gpu_vulkan.c
+@@ -34,6 +34,12 @@
+ #include "../SDL_sysgpu.h"
+ #include "../../events/SDL_windowevents_c.h"
+ 
++// Nativ (ANDROID-PERF-03): the pipeline cache file's format, checks and atomic write
++#define NVPC_MALLOC SDL_malloc
++#define NVPC_FREE   SDL_free
++#include "nativ_vk_pcache.h"
++#define SDL_PROP_GPU_DEVICE_CREATE_VULKAN_PIPELINE_CACHE_FILE_STRING "SDL.gpu.device.create.vulkan.pipeline_cache_file"
++
+ // Global Vulkan Loader Entry Points
+ 
+ static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = NULL;
+@@ -1228,6 +1234,17 @@
+     Uint32 allocationsToDefragCount;
+     Uint32 allocationsToDefragCapacity;
+ 
++    // Nativ (ANDROID-PERF-03): the pipeline cache file, nativ_vk_pcache.h
++    VkPipelineCache pipelineCache;
++    char *pipelineCachePath;
++    NvpcDevice pipelineCacheDevice;
++    SDL_AtomicInt pipelineCacheNew;      // pipelines created since the last save
++    SDL_AtomicInt pipelineCacheSaving;   // a save is running (the saver thread or the background watch)
++    SDL_AtomicU32 pipelineCacheLastCreate; // SDL_GetTicks() of the last pipeline, low 32 bits
++    Uint64 pipelineCacheLastSave;
++    size_t pipelineCacheSavedSize;
++    SDL_Thread *pipelineCacheThread;
++
+ #define VULKAN_INSTANCE_FUNCTION(func) \
+     PFN_##func func;
+ #define VULKAN_DEVICE_FUNCTION(func) \
+@@ -1246,6 +1263,185 @@
+ static bool VULKAN_Submit(SDL_GPUCommandBuffer *commandBuffer);
+ static SDL_GPUCommandBuffer *VULKAN_AcquireCommandBuffer(SDL_GPURenderer *driverData);
+ 
++/* Nativ (ANDROID-PERF-03): one VkPipelineCache for every pipeline, filled at device creation from the file the app
++ * names (SDL_PROP_GPU_DEVICE_CREATE_VULKAN_PIPELINE_CACHE_FILE_STRING, else the SDL_GPU_VULKAN_PIPELINE_CACHE_FILE
++ * environment variable; neither: a cache in memory only) and written back to it: by a thread once pipeline creation has
++ * been quiet for 2 s (at most every 15 s, and only when the driver's blob grew), synchronously when the app goes to the
++ * background (Android may end the process there without another word), and at device destruction. Messages go to
++ * stderr (Nativ's session log). */
++static bool VULKAN_INTERNAL_SavePipelineCache(VulkanRenderer *renderer, const char *why)
++{
++    size_t n = 0;
++    void *data = NULL;
++    VkResult res;
++    Uint64 t0 = SDL_GetTicksNS();
++    int lost = SDL_SetAtomicInt(&renderer->pipelineCacheNew, 0);
++    for (int tries = 0; tries < 4; tries += 1) {   // (VK_INCOMPLETE: it grew between the two calls)
++        res = renderer->vkGetPipelineCacheData(renderer->logicalDevice, renderer->pipelineCache, &n, NULL);
++        if (res != VK_SUCCESS || n == 0) {
++            break;
++        }
++        if (n == renderer->pipelineCacheSavedSize) {   // nothing new reached the driver's cache
++            return true;
++        }
++        SDL_free(data);
++        data = SDL_malloc(n);
++        if (!data) {
++            break;
++        }
++        res = renderer->vkGetPipelineCacheData(renderer->logicalDevice, renderer->pipelineCache, &n, data);
++        if (res != VK_INCOMPLETE) {
++            break;
++        }
++    }
++    bool ok = data && res == VK_SUCCESS && nvpc_save(renderer->pipelineCachePath, &renderer->pipelineCacheDevice, data, n) == 0;
++    SDL_free(data);
++    if (ok) {
++        renderer->pipelineCacheSavedSize = n;
++        fprintf(stderr, "    gpu: vulkan pipeline cache: saved %zu bytes to %s in %.1f ms (%s)\n", n, renderer->pipelineCachePath, (SDL_GetTicksNS() - t0) / 1e6, why);
++    } else {
++        SDL_AddAtomicInt(&renderer->pipelineCacheNew, lost);   // (try again at the next quiet moment)
++        fprintf(stderr, "    gpu: vulkan pipeline cache: saving %zu bytes to %s failed (%s, VkResult %d)\n", n, renderer->pipelineCachePath, why, (int)res);
++    }
++    renderer->pipelineCacheLastSave = SDL_GetTicks();
++    return ok;
++}
++
++static int SDLCALL VULKAN_INTERNAL_PipelineCacheSaver(void *data)
++{
++    VulkanRenderer *renderer = (VulkanRenderer *)data;
++    VULKAN_INTERNAL_SavePipelineCache(renderer, "quiet");
++    SDL_SetAtomicInt(&renderer->pipelineCacheSaving, 0);
++    return 0;
++}
++
++static void VULKAN_INTERNAL_PipelineCreated(VulkanRenderer *renderer)
++{
++    SDL_AddAtomicInt(&renderer->pipelineCacheNew, 1);
++    SDL_SetAtomicU32(&renderer->pipelineCacheLastCreate, (Uint32)SDL_GetTicks());
++}
++
++static void VULKAN_INTERNAL_MaybeSavePipelineCache(VulkanRenderer *renderer)   // (each present)
++{
++    if (!renderer->pipelineCachePath || SDL_GetAtomicInt(&renderer->pipelineCacheNew) == 0) {
++        return;
++    }
++    Uint64 now = SDL_GetTicks();
++    if ((Uint32)now - SDL_GetAtomicU32(&renderer->pipelineCacheLastCreate) < 2000 || now - renderer->pipelineCacheLastSave < 15000) {
++        return;
++    }
++    if (!SDL_CompareAndSwapAtomicInt(&renderer->pipelineCacheSaving, 0, 1)) {
++        return;
++    }
++    if (renderer->pipelineCacheThread) {   // (the last one, finished: it cleared the flag)
++        SDL_WaitThread(renderer->pipelineCacheThread, NULL);
++    }
++    renderer->pipelineCacheLastSave = now;
++    renderer->pipelineCacheThread = SDL_CreateThread(VULKAN_INTERNAL_PipelineCacheSaver, "SDLGPUPipeCache", renderer);
++    if (!renderer->pipelineCacheThread) {
++        SDL_SetAtomicInt(&renderer->pipelineCacheSaving, 0);
++    }
++}
++
++static void VULKAN_INTERNAL_SavePipelineCacheNow(VulkanRenderer *renderer, const char *why)   // (background, destruction)
++{
++    if (!renderer->pipelineCachePath || renderer->pipelineCache == VK_NULL_HANDLE) {
++        return;
++    }
++    while (!SDL_CompareAndSwapAtomicInt(&renderer->pipelineCacheSaving, 0, 1)) {   // (a quiet-time save is writing)
++        SDL_Delay(1);
++    }
++    if (renderer->pipelineCacheThread) {
++        SDL_WaitThread(renderer->pipelineCacheThread, NULL);
++        renderer->pipelineCacheThread = NULL;
++    }
++    if (SDL_GetAtomicInt(&renderer->pipelineCacheNew) > 0) {
++        VULKAN_INTERNAL_SavePipelineCache(renderer, why);
++    }
++    SDL_SetAtomicInt(&renderer->pipelineCacheSaving, 0);
++}
++
++static bool SDLCALL VULKAN_INTERNAL_PipelineCacheOnEvent(void *userdata, SDL_Event *e)
++{
++    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND || e->type == SDL_EVENT_TERMINATING) {
++        VULKAN_INTERNAL_SavePipelineCacheNow((VulkanRenderer *)userdata, e->type == SDL_EVENT_TERMINATING ? "terminating" : "background");
++    }
++    return true;
++}
++
++static void VULKAN_INTERNAL_CreatePipelineCache(VulkanRenderer *renderer, SDL_PropertiesID props)
++{
++    const VkPhysicalDeviceProperties *pp = &renderer->physicalDeviceProperties.properties;
++    const char *path = SDL_GetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_PIPELINE_CACHE_FILE_STRING, NULL);
++    VkPipelineCacheCreateInfo ci;
++    void *buf = NULL;
++    size_t off = 0, n = 0, fileSize = 0;
++    int why = NVPC_NOFILE;
++    VkResult res;
++    Uint64 t0 = SDL_GetTicksNS();
++
++    if (!path) {
++        path = SDL_getenv("SDL_GPU_VULKAN_PIPELINE_CACHE_FILE");
++    }
++    renderer->pipelineCacheDevice.vendor = pp->vendorID;
++    renderer->pipelineCacheDevice.device = pp->deviceID;
++    renderer->pipelineCacheDevice.driver = pp->driverVersion;
++    SDL_memcpy(renderer->pipelineCacheDevice.uuid, pp->pipelineCacheUUID, 16);
++    if (path && *path) {
++        renderer->pipelineCachePath = SDL_strdup(path);
++        why = nvpc_load(path, &renderer->pipelineCacheDevice, &buf, &off, &n, &fileSize);
++    }
++    SDL_zero(ci);
++    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
++    if (why == NVPC_OK) {
++        ci.initialDataSize = n;
++        ci.pInitialData = (Uint8 *)buf + off;
++    }
++    res = renderer->vkCreatePipelineCache(renderer->logicalDevice, &ci, NULL, &renderer->pipelineCache);
++    if (res != VK_SUCCESS && ci.initialDataSize) {   // the driver refused the blob: start empty
++        ci.initialDataSize = 0;
++        ci.pInitialData = NULL;
++        res = renderer->vkCreatePipelineCache(renderer->logicalDevice, &ci, NULL, &renderer->pipelineCache);
++        why = -1;
++    }
++    SDL_free(buf);
++    if (res != VK_SUCCESS) {
++        renderer->pipelineCache = VK_NULL_HANDLE;
++        fprintf(stderr, "    gpu: vulkan pipeline cache: none (vkCreatePipelineCache: VkResult %d)\n", (int)res);
++        SDL_free(renderer->pipelineCachePath);
++        renderer->pipelineCachePath = NULL;
++        return;
++    }
++    if (!renderer->pipelineCachePath) {
++        fprintf(stderr, "    gpu: vulkan pipeline cache: in memory only (no file named)\n");
++    } else if (why == NVPC_OK) {
++        renderer->pipelineCacheSavedSize = n;
++        fprintf(stderr, "    gpu: vulkan pipeline cache: loaded %zu bytes from %s in %.1f ms\n", n, path, (SDL_GetTicksNS() - t0) / 1e6);
++    } else if (why == NVPC_NOFILE) {
++        fprintf(stderr, "    gpu: vulkan pipeline cache: starting empty (no %s yet)\n", path);
++    } else {
++        fprintf(stderr, "    gpu: vulkan pipeline cache: starting empty, %s (%zu bytes) ignored: %s\n", path, fileSize, why < 0 ? "the driver refused it" : nvpc_why(why));
++    }
++    renderer->pipelineCacheLastSave = SDL_GetTicks();
++    if (renderer->pipelineCachePath) {
++        SDL_AddEventWatch(VULKAN_INTERNAL_PipelineCacheOnEvent, renderer);
++    }
++}
++
++static void VULKAN_INTERNAL_DestroyPipelineCache(VulkanRenderer *renderer)
++{
++    if (renderer->pipelineCachePath) {
++        SDL_RemoveEventWatch(VULKAN_INTERNAL_PipelineCacheOnEvent, renderer);
++        VULKAN_INTERNAL_SavePipelineCacheNow(renderer, "device destroyed");
++    }
++    if (renderer->pipelineCache != VK_NULL_HANDLE) {
++        renderer->vkDestroyPipelineCache(renderer->logicalDevice, renderer->pipelineCache, NULL);
++        renderer->pipelineCache = VK_NULL_HANDLE;
++    }
++    SDL_free(renderer->pipelineCachePath);
++    renderer->pipelineCachePath = NULL;
++}
++
+ // Error Handling
+ 
+ static inline const char *VkErrorMessages(VkResult code)
+@@ -5075,6 +5271,7 @@
+     SDL_DestroyMutex(renderer->descriptorSetLayoutFetchLock);
+     SDL_DestroyMutex(renderer->windowLock);
+ 
++    VULKAN_INTERNAL_DestroyPipelineCache(renderer); // Nativ (ANDROID-PERF-03)
+     renderer->vkDestroyDevice(renderer->logicalDevice, NULL);
+     renderer->vkDestroyInstance(renderer->instance, NULL);
+ 
+@@ -6623,10 +6820,9 @@
+     vkPipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
+     vkPipelineCreateInfo.basePipelineIndex = 0;
+ 
+-    // TODO: enable pipeline caching
+     vulkanResult = renderer->vkCreateGraphicsPipelines(
+         renderer->logicalDevice,
+-        VK_NULL_HANDLE,
++        renderer->pipelineCache, // Nativ (ANDROID-PERF-03)
+         1,
+         &vkPipelineCreateInfo,
+         NULL,
+@@ -6647,6 +6843,7 @@
+     }
+ 
+     SDL_SetAtomicInt(&graphicsPipeline->referenceCount, 0);
++    VULKAN_INTERNAL_PipelineCreated(renderer);
+ 
+     if (renderer->debugMode && renderer->supportsDebugUtils && SDL_HasProperty(createinfo->props, SDL_PROP_GPU_GRAPHICSPIPELINE_CREATE_NAME_STRING)) {
+         VkDebugUtilsObjectNameInfoEXT nameInfo;
+@@ -6761,7 +6958,7 @@
+ 
+     vulkanResult = renderer->vkCreateComputePipelines(
+         renderer->logicalDevice,
+-        (VkPipelineCache)VK_NULL_HANDLE,
++        renderer->pipelineCache, // Nativ (ANDROID-PERF-03)
+         1,
+         &vkShaderCreateInfo,
+         NULL,
+@@ -6774,6 +6971,7 @@
+     }
+ 
+     SDL_SetAtomicInt(&vulkanComputePipeline->referenceCount, 0);
++    VULKAN_INTERNAL_PipelineCreated(renderer);
+ 
+     if (renderer->debugMode && renderer->supportsDebugUtils && SDL_HasProperty(createinfo->props, SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_NAME_STRING)) {
+         VkDebugUtilsObjectNameInfoEXT nameInfo;
+@@ -10830,6 +11028,10 @@
+         (renderer->claimedWindowCount > 0 && vulkanCommandBuffer->swapchainRequested) ||
+         renderer->claimedWindowCount == 0;
+ 
++    if (vulkanCommandBuffer->presentDataCount > 0) {
++        VULKAN_INTERNAL_MaybeSavePipelineCache(renderer); // Nativ (ANDROID-PERF-03)
++    }
++
+     SDL_LockMutex(renderer->submitLock);
+ 
+     // FIXME: Can this just be permanent?
+@@ -12984,6 +13186,8 @@
+ 
+     renderer->minUBOAlignment = (Uint32)renderer->physicalDeviceProperties.properties.limits.minUniformBufferOffsetAlignment;
+ 
++    VULKAN_INTERNAL_CreatePipelineCache(renderer, props); // Nativ (ANDROID-PERF-03)
++
+     // Initialize caches
+ 
+     renderer->commandPoolHashTable = SDL_CreateHashTable(

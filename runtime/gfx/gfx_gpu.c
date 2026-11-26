@@ -412,6 +412,17 @@ static int keep_alpha_blend_needs_copy(void) {
  * VK_ERROR_DEVICE_LOST: Killzone crashed, Unit 13 froze, 2026-10-23). A device without the features is made without them,
  * the tests then off. */
 static int vk_fragment_stores;   /* a Vulkan device with fragmentStoresAndAtomics */
+/* ANDROID-PERF-03: the file SDL's Vulkan backend keeps its VkPipelineCache in (the driver's compiled pipelines across
+ * sessions: Adreno's driver has no disk cache of its own). Nativ's SDL patch, runtime/platform/sdl-patches, loads it with
+ * its header checked and saves it atomically; a stock SDL ignores the property. RECOMP_VK_PIPELINE_CACHE=<file>, =0 none;
+ * default shader_cache/vulkan_pipelines.bin (RECOMP_SHADER_CACHE's folder: the app's data folder on Android) */
+static int vk_pcache_file(char *out, size_t n) {
+	const char *e = getenv("RECOMP_VK_PIPELINE_CACHE"), *d;
+	if (e && *e) { if (!strcmp(e, "0")) return 0; snprintf(out, n, "%s", e); return 1; }
+	e = getenv("RECOMP_SHADER_CACHE"); d = e ? (*e && strcmp(e, "0") ? e : 0) : "shader_cache";   /* (msl_cache_dir's rule: that one is Metal-only) */
+	if (!d || (mkdir(d, 0755) && errno != EEXIST)) return 0;
+	snprintf(out, n, "%s/vulkan_pipelines.bin", d); return 1;
+}
 static SDL_GPUDevice *create_gpu_device(void) {
 	SDL_GPUDevice *d = 0;
 #ifndef __APPLE__   /* (on Apple, Metal: SDL could otherwise find MoltenVK) */
@@ -427,6 +438,7 @@ static SDL_GPUDevice *create_gpu_device(void) {
 		SDL_SetStringProperty(p, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
 		{ const char *lp = getenv("RECOMP_GPU_LOW_POWER"); if (lp && *lp && *lp != '0') SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, true); }   /* (RECOMP_GPU_LOW_POWER=1: SDL picks an integrated GPU where there's one beside a discrete one: a laptop's Radeon, for testing) */
 		SDL_SetPointerProperty(p, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vo);
+		{ char pc[1100]; if (vk_pcache_file(pc, sizeof pc)) SDL_SetStringProperty(p, "SDL.gpu.device.create.vulkan.pipeline_cache_file", pc); }
 		d = SDL_CreateGPUDeviceWithProperties(p);
 		if (!d) fprintf(stderr, "    gpu: Vulkan device with robustBufferAccess and fragmentStoresAndAtomics failed: %s\n", SDL_GetError());
 		SDL_DestroyProperties(p);
@@ -2358,6 +2370,11 @@ static void pipeline_build(PipeJob *j) {
 	if (mtl_archive_on) mtl_archive_want_clear();   /* (if SDL made none) */
 #endif
 	uint64_t dt = us_now() - tpb0; __atomic_add_fetch(&t_pipe_build, dt, __ATOMIC_RELAXED); __atomic_add_fetch(&n_pipe_builds, 1, __ATOMIC_RELAXED);
+	{	static int on = -1; static uint64_t tus; static uint32_t tn, tslow, tmax;   /* RECOMP_PIPE_TOTALS=1 (ANDROID-PERF-03's measure): this session's pipeline creation so far, every 25 */
+		if (on < 0) on = getenv("RECOMP_PIPE_TOTALS") && *getenv("RECOMP_PIPE_TOTALS") == '1';
+		if (on) { uint64_t us = __atomic_add_fetch(&tus, dt, __ATOMIC_RELAXED); uint32_t sl = dt > 16000 ? __atomic_add_fetch(&tslow, 1, __ATOMIC_RELAXED) : __atomic_load_n(&tslow, __ATOMIC_RELAXED), k = __atomic_add_fetch(&tn, 1, __ATOMIC_RELAXED);
+			if ((uint32_t)dt > __atomic_load_n(&tmax, __ATOMIC_RELAXED)) __atomic_store_n(&tmax, (uint32_t)dt, __ATOMIC_RELAXED);
+			if (k % 25 == 0) fprintf(stderr, "    gpu: pipeline totals: %u created in %.0f ms (%u over 16 ms, slowest %.1f ms)\n", k, us / 1e3, sl, __atomic_load_n(&tmax, __ATOMIC_RELAXED) / 1e3); } }
 	if (hitch_log() && (dt > 300 || j->async) && !j->p->prebuilt) fprintf(stderr, "    gpu hitch: pipeline %#x/%#x created in %.2f ms%s\n", j->vprog, j->fprog, dt / 1e3, j->async ? " (by a worker)" : "");
 	if (!pp) fprintf(stderr, "    gpu: pipeline %#x/%#x: %s\n", j->vprog, j->fprog, SDL_GetError());
 	j->p->pipe = pp;
