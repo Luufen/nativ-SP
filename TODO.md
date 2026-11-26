@@ -1,5 +1,7 @@
 # Release follow-up
 
+- ANDROID-PERF-01, 2026-11-26. Android defaults: anisotropy 1x and a vsync (FIFO) Vulkan swapchain; desktop keeps 16x and mailbox. Saved settings, RECOMP_ANISO and RECOMP_PRESENT_MODE still win. The WSL runtime suite passed (including the new platform_defaults_test, desktop and Android) and the synthetic Android builds passed 15 checks. Device fps and the touch-flicker check are open.
+
 - Android on Samsung Xclipse 940. Investigate the severe graphics defects in the Uncharted: Golden Abyss prologue.
   The Vulkan startup crash is fixed.
 - Android on Adreno 650. Profile Killzone: Mercenary in mission 2, where it falls short of 60 fps.

@@ -511,12 +511,12 @@ static void page_display(void) {
 		ImGui::SetNextItemWidth(-FLT_MIN);
 		if (ui::slider_float("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? ui_tr("common.off") : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); save_settings(); }
 	}
-	ui::row(ui_tr("display.aniso"), ui_tr("display.aniso_help"), note_int("anisotropy", settings_int("anisotropy", 16)));
+	ui::row(ui_tr("display.aniso"), ui_tr("display.aniso_help"), note_int("anisotropy", settings_int("anisotropy", DEFAULT_ANISOTROPY)));
 	{	static const int an[5] = {1, 2, 4, 8, 16};
 		char t0[48], t1[48], t2[48], t3[48], t4[48];
 		const char *names[5] = {tr_suf(ui_tr("common.off"), "##af", t0, sizeof t0), tr_suf("2×", "##af", t1, sizeof t1),
 		                        tr_suf("4×", "##af", t2, sizeof t2), tr_suf("8×", "##af", t3, sizeof t3), tr_suf("16×", "##af", t4, sizeof t4)};
-		int cur = settings_int("anisotropy", 16), v = 4; for (int i = 0; i < 5; i++) if (an[i] == cur) v = i;
+		int cur = settings_int("anisotropy", DEFAULT_ANISOTROPY), v = 4; for (int i = 0; i < 5; i++) if (an[i] == cur) v = i;
 		if (ui::segmented(names, 5, &v)) { settings_set_int("anisotropy", an[v]); save_settings(); }
 	}
 	ui::row(ui_tr("display.shadow"), ui_tr("display.shadow_help"), note_int("shadow_filter", settings_int("shadow_filter", 1)));

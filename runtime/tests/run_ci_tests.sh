@@ -56,6 +56,10 @@ run log_redact_test   -O1 -g -Wall -I ../ui log_redact_test.c
 run ui_text_test      -O1 -g -Wall -I ../ui ui_text_test.c ../ui/ui_text.c
 run settings_reset_test -O1 -g -Wall -I ../core settings_reset_test.c ../core/settings.c -lpthread
 run settings_save_test -O1 -g -Wall -I ../core settings_save_test.c ../core/settings.c -lpthread
+# ANDROID-PERF-01: the platform defaults, desktop and Android
+CXX_DEF="-x c++ -O1 -g -Wall -I ../core -I ../ui"
+run platform_defaults_test         $CXX_DEF platform_defaults_test.cpp -lstdc++
+run platform_defaults_android_test $CXX_DEF -D__ANDROID__ platform_defaults_test.cpp -lstdc++
 run sysinfo_test      -O1 -g -Wall -I ../ui sysinfo_test.c
 run cdlg_test         -O1 -g -Wall -I ../core cdlg_test.c
 run gfx_async_test   -O1 -g -Wall -Wno-unused-function -Wno-unknown-pragmas -D_GNU_SOURCE $INC gfx_async_test.c -lpthread   # DECKPERF-02: the renderer draw worker

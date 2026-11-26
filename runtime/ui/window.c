@@ -42,6 +42,7 @@
 #include "hle.h"
 #include "metrics.h"
 #include "settings.h"
+#include "../core/platform_defaults.h"
 #include "pad_bind.h"
 #include "overlay.h"
 #include "audio_pace.h"
@@ -1201,14 +1202,14 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * waits for the swapchain image on the GPU's one queue, and every scene the game submits after it waits out the
 		 * refresh too. Killzone's CPU reads of its exposure target waited ~6 ms each: 40 fps windowed against 66 headless
 		 * (RTX laptop, 2026-10-26), 47 with mailbox. Mailbox doesn't block, so this loop paces itself (self_paced, below).
-		 * Metal blocks the CPU in nextDrawable instead, not the queue: vsync there. RECOMP_PRESENT_MODE=fifo|mailbox|immediate */
+		 * Metal blocks the CPU in nextDrawable instead, not the queue: vsync there. Android: vsync (platform_defaults.h). RECOMP_PRESENT_MODE=fifo|mailbox|immediate */
 		char pm_set[16];
 		const char *pe = getenv("RECOMP_PRESENT_MODE"), *dv = SDL_GetGPUDeviceDriver(gpu);
 		if (!pe) { settings_str("present_mode", "", pm_set, sizeof pm_set); if (pm_set[0]) pe = pm_set; }   /* (U9: the menu's Presentation choice, read at start; RECOMP_PRESENT_MODE still wins) */
 		/* (with mailbox, Killzone at 3x and 21:9 lost the device in about half its runs: the FRAGCOLOR copy, a blit since,
 		 * gfx_gpu.c fetch_blit) */
 		SDL_GPUPresentMode pm = pe ? (!strcmp(pe, "immediate") ? SDL_GPU_PRESENTMODE_IMMEDIATE : !strcmp(pe, "mailbox") ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC)
-		                           : dv && !strcmp(dv, "vulkan") ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
+		                           : DEFAULT_VULKAN_MAILBOX && dv && !strcmp(dv, "vulkan") ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
 		if (pm != SDL_GPU_PRESENTMODE_VSYNC && SDL_WindowSupportsGPUPresentMode(gpu, win, pm) && SDL_SetGPUSwapchainParameters(gpu, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, pm)) self_paced = 1;
 		present_mode_v = !self_paced ? "vsync" : pm == SDL_GPU_PRESENTMODE_MAILBOX ? "mailbox" : "immediate";
 		fprintf(stderr, "    window: present mode %s\n", present_mode_v);
