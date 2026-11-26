@@ -1,6 +1,7 @@
 # Release follow-up
 
 - ANDROID-PERF-01, 2026-11-26. Android defaults: anisotropy 1x and a vsync (FIFO) Vulkan swapchain; desktop keeps 16x and mailbox. Saved settings, RECOMP_ANISO and RECOMP_PRESENT_MODE still win. The WSL runtime suite passed (including the new platform_defaults_test, desktop and Android) and the synthetic Android builds passed 15 checks. Galaxy Tab S7, Killzone M02, two A/B pairs: 13.7 -> 14.0 and 13.5 -> 13.9 fps median (old 16x+mailbox -> new defaults); the owner saw no flicker; no swapchain recreation in 60 s of play. Mali is untested.
+- ANDROID-PERF-04, 2026-11-26. Closed as not needed: texture uploads broke no open render pass in 310 reports (18,600 presents) of Killzone: Mercenary on the Galaxy Tab S7, nor in a Windows run into the same mission. Uploads already run in their own command buffers ahead of the queued scene. The breaks left are framebuffer-colour copies and view passes. Only the counter is added (`RECOMP_GPU_PASS_COUNT=1`, off by default; `pass_count_test`). Upstream: not proposed (upstream PRs are stopped).
 
 - Android on Samsung Xclipse 940. Investigate the severe graphics defects in the Uncharted: Golden Abyss prologue.
   The Vulkan startup crash is fixed.

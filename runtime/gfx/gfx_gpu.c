@@ -24,6 +24,7 @@
 #include "fsr/fsr.h"
 #include "view_swz.h"
 #include "view_u16.h"
+#include "pass_count.h"
 #include "target_rows.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1223,6 +1224,10 @@ static void tex_release_samplers(TexEntry *e) {
 }
 /* (address, format, width, height) cache: re-decodes/re-uploads when the guest overwrites a
  * texture's bytes in place (see get_texture's change detection) or its layout changes */
+/* RECOMP_GPU_PASS_COUNT=1 (pass_count.h, ANDROID-PERF-04): the breaks of an open scene's render pass, printed every 60 presents */
+static PassCount pass_count;
+static int pass_count_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_PASS_COUNT"); v = e && *e && *e != '0'; } return v; }
+static void pass_count_upload(void);   /* (below, with the batch) */
 /* a texture decoded from memory a GPU target has since been downloaded over: decode it again */
 static void textures_invalidate(uint32_t lo, uint32_t hi) {
 	for (int i = 0; i < ntextures; i++) if (textures[i].addr >= lo && textures[i].addr < hi) { textures[i].stale = 1; textures[i].full = 1; textures[i].checked_frame = 0; }
@@ -1500,6 +1505,7 @@ static void upload_texture(TexEntry *e, const GfxTexture *t) {
 	e->chash = hash_bytes(G(t->data), e->span); e->levels = levels;   /* what the GPU texture holds (~10 us for 256 KB) */
 	int wide = tex_wide(t->format); uint32_t bpp = wide ? 16 : 4;
 	batch_retire(e->tex, "texture re-upload");   /* its own command buffer runs before the pending draws that sampled the old content */
+	pass_count_upload();
 	/* the same address, format and size with another mip count (Persona 4 Dancing's costumes: each one loaded over the
 	 * last): the texture object was made with the old count, and a level past its end is no subresource at all (a crash
 	 * inside SDL_UploadToGPUTexture on Vulkan) -- a new object */
@@ -3424,6 +3430,7 @@ void gfx_gpu_frame_queued(void) {
 }
 void gfx_gpu_begin_scene(const GfxTarget *t) {
 	scene_open = 1; scene_thread = pthread_self();
+	if (pass_count_on()) pc_scene_begin(&pass_count);
 	scene_trace_addr = scene_trace_draw = 0;
 	gfx_soft_use_interp();   /* the CPU fallback and check reference run the real shaders */
 	render_scale_init();
@@ -4581,6 +4588,7 @@ static int batch_uses(SDL_GPUTexture *tex) {
 }
 static int batch_uses_pipe(const PipeEntry *p) { for (int i = 0; i < batch.n; i++) if (batch.d[i].pipe == p) return 1; return 0; }
 static void batch_retire(SDL_GPUTexture *tex, const char *why) { if (tex && (batch.n || batch.nev) && batch_uses(tex)) batch_flush(why); }
+static void pass_count_upload(void) { if (pass_count_on() && batch.n) pc_upload(&pass_count); }
 static BatchDraw *batch_add(void) {
 	if (batch.n == batch.cap) { batch.cap = batch.cap ? 2 * batch.cap : 256; batch.d = realloc(batch.d, (size_t)batch.cap * sizeof *batch.d); }
 	BatchDraw *b = &batch.d[batch.n++]; b->hud = 0;
@@ -4595,6 +4603,7 @@ static BatchEvent *batch_event(void) {
 static void view_pass(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *dst, SDL_GPUTexture *src, int from_depth, const ViewU *u) {
 	SDL_GPUColorTargetInfo ct = { .texture = dst, .load_op = SDL_GPU_LOADOP_DONT_CARE, .store_op = SDL_GPU_STOREOP_STORE };
 	SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, 0);
+	if (pass_count_on()) pc_other_pass(&pass_count);
 	int baked; SDL_BindGPUGraphicsPipeline(rp, view_pipeline_for(from_depth, u, &baked));   /* RECOMP_GPU_VIEW_FAST: a per-view baked pipeline (no uniform buffer -- u is baked into it) or the general one at u's format */
 	SDL_GPUTextureSamplerBinding b = { src, nearest_sampler() }; SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
 	if (!baked) SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof *u);
@@ -4653,6 +4662,7 @@ int gfx_gpu_transfer_downscale(uint32_t src, uint32_t sw, uint32_t sh, uint32_t 
 	if (!cmd) return 0;
 	SDL_GPUColorTargetInfo ct = { .texture = d->color, .load_op = SDL_GPU_LOADOP_DONT_CARE, .store_op = SDL_GPU_STOREOP_STORE };
 	SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, 0);
+	if (pass_count_on()) pc_other_pass(&pass_count);
 	SDL_BindGPUGraphicsPipeline(rp, p);
 	SDL_GPUTextureSamplerBinding b = { s->color, nearest_sampler() }; SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
 	SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
@@ -4780,6 +4790,7 @@ static void batch_flush_body(const char *why) {
 	  if (i < 16) flush_why[i].n++; }
 	if (trace_sync()) fprintf(stderr, "gpu trace: flush %d draws, %d passes between them (%s) after %u gpu draws\n", batch.n, batch.nev, why, n_gpu_draws);
 	n_batch_cmd++; n_batch_draws += (uint32_t)batch.n;
+	const char *pc_inside = 0;   /* what ended the scene's render pass inside this command buffer */
 	SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu());
 	t_acq += us_now() - t0;
 	uint64_t tc0 = us_now();
@@ -4818,6 +4829,8 @@ static void batch_flush_body(const char *why) {
 				.load_op = clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD, .stencil_load_op = clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD,
 				.store_op = SDL_GPU_STOREOP_STORE, .stencil_store_op = SDL_GPU_STOREOP_STORE };
 			SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &cti, 1, batch.depth ? &dti : 0);
+			if (pass_count_on()) pc_scene_pass(&pass_count, first ? 0 : pc_inside);
+			pc_inside = 0;
 			n_batch_pass++; first = 0;
 			/* the dynamic state between draws of the pass, set only when it changes (uniform data pushed
 			 * stays bound for the later draws of the command buffer, across pipeline binds -- but a view
@@ -4854,6 +4867,7 @@ static void batch_flush_body(const char *why) {
 		}
 		if (e == batch.nev) break;
 		BatchEvent *ev = &batch.ev[e];
+		if (!pc_inside) pc_inside = ev->view ? "view pass" : "fragcolor copy";
 		if (ev->view) view_pass(cmd, ev->dst, ev->src, ev->from_depth, &ev->u);
 		else if (fetch_blit()) {   /* the same copy as a blit (fetch_blit: Vulkan) */
 			SDL_GPUBlitInfo bl = { .source = { .texture = ev->src, .x = ev->x, .y = ev->y, .w = ev->w, .h = ev->h }, .destination = { .texture = ev->dst, .x = ev->x, .y = ev->y, .w = ev->w, .h = ev->h }, .load_op = SDL_GPU_LOADOP_LOAD, .filter = SDL_GPU_FILTER_NEAREST };
@@ -4872,6 +4886,7 @@ static void batch_flush_body(const char *why) {
 			SDL_GPUDepthStencilTargetInfo mdt = { .texture = batch.depth, .load_op = SDL_GPU_LOADOP_LOAD, .stencil_load_op = SDL_GPU_LOADOP_LOAD,
 				.store_op = SDL_GPU_STOREOP_STORE, .stencil_store_op = SDL_GPU_STOREOP_STORE };
 			SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &mti, 1, &mdt);
+			if (pass_count_on()) pc_other_pass(&pass_count);
 			batch.mv_clear = 0;
 			SDL_GPUGraphicsPipeline *lp = 0; const BatchDraw *last = 0; int ibound = 0;
 			for (int i = 0; i < batch.n; i++) {
@@ -4899,6 +4914,7 @@ static void batch_flush_body(const char *why) {
 	{ uint64_t ts0 = us_now(); SDL_GPUFence *f = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); t_submit += us_now() - ts0; ring_fence_add(f, vlo / 4, vhi / 4, ilo == ~0u ? 0 : ilo / 4, ilo == ~0u ? 0 : ihi / 4, bwr_lo == ~0u ? 0 : bwr_lo, bwr_hi); }
 	bw_lo = bwr_lo = ~0u; bw_hi = bwr_hi = 0;
 	vis_download();
+	if (pass_count_on()) pc_flush(&pass_count, why, batch.n);
 	if (fence_stats_on()) {   /* RECOMP_GPU_FENCE_STATS: a mark after every scene submit (see fence_mark); tagged with what this command buffer held */
 		int nv = 0, nf = 0, nh = 0; for (int i = 0; i < batch.nev; i++) { if (batch.ev[i].view) { nv++; nh += batch.ev[i].hoisted; } else nf++; }
 		snprintf(fm_tag, sizeof fm_tag, "tgt %#x fmt %#x %ux%u rt %ux%u ms%ux%u ds %#x fmt %#x ld%d st%d: %d draws %u passes %d views %d fetchcopies (%s)%s", scene_target.data, scene_target.format, scene_target.width, scene_target.height, scene_target.rt_width, scene_target.rt_height, scene_target.ms_x, scene_target.ms_y, scene_target.ds_data, scene_target.ds_format, scene_target.ds_force_load, scene_target.ds_force_store, batch.n, n_batch_pass - pass0, nv, nf, why, nh ? " hoisted" : "");
@@ -6784,6 +6800,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 	const uint64_t readback_prewait_us = prewait_us;
 	if (gpu()) { batch_flush("present"); readbacks_complete_at_present(); vis_complete(0); }   /* normally empty: the scene's end flushed; the CPU reads its readbacks from the next frame on */
 	if (gpu() && fence_stats_on()) fence_stats_present();
+	if (pass_count_on()) { char line[1024]; if (pc_frame(&pass_count, 60, line, sizeof line)) fprintf(stderr, "    %s\n", line); }
 	if (stats) {
 		fprintf(stderr, "    gpu stats: frame %llu: %u draws on the GPU (%llu indices), %u on the software path this frame, %u skipped (building), %u readbacks, tables %d shaders %d pipelines", (unsigned long long)gpu_frame_no, n_gpu_draws, (unsigned long long)n_gpu_indices, n_fallback, n_async_skips, n_readbacks, nshaders, npipelines); n_readbacks = 0; n_gpu_indices = 0; if (!hitch_log()) n_async_skips = 0;
 		for (int i = 0; i < n_fallback_why; i++) fprintf(stderr, "%s %u %s", i ? "," : ":", fallback_why[i].n, fallback_why[i].why);
