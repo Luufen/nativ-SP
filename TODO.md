@@ -1,5 +1,7 @@
 # Release follow-up
 
+- ANDROID-PERF-04, 2026-11-26. Closed as not needed: texture uploads broke no open render pass in 310 reports (18,600 presents) of Killzone: Mercenary on the Galaxy Tab S7, nor in a Windows run into the same mission. Uploads already run in their own command buffers ahead of the queued scene. The breaks left are framebuffer-colour copies and view passes. Only the counter is added (`RECOMP_GPU_PASS_COUNT=1`, off by default; `pass_count_test`). Upstream: not proposed (upstream PRs are stopped).
+
 - Android on Samsung Xclipse 940. Investigate the severe graphics defects in the Uncharted: Golden Abyss prologue.
   The Vulkan startup crash is fixed.
 - Android on Adreno 650. Profile Killzone: Mercenary in mission 2, where it falls short of 60 fps.
