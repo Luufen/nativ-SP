@@ -26,3 +26,5 @@
 - TERRARIA-01, 2026-11-24. Direct branches into another compiled body now resolve same-mode instruction labels, including sources discovered as code in gaps. All 23 recompiler fixtures passed. The native run passed the previously unresolved split switch branch.
 
 - TERRARIA-01, 2026-11-24. Experimental PCSE00317 1.11 pack pins the executable and 114 verified ARM entries. Native Windows startup opens the archive and submits three 960 x 544 frames. The 600-frame test times out while the main and render threads wait on separate semaphores. Menu and gameplay verification are pending.
+
+- ANDROID-PERF-02, 2026-11-26. The SPIR-V translator splits every TEMP/PA/O/FPINTERNAL register bank that no INDEXED1/2 operand addresses into per-word Function variables (RECOMP_GPU_REGSPLIT=0 keeps the arrays; RECOMP_GPU_REGSPLIT_LOG=1 counts). New usse_regsplit_test: 40/0 with spirv-val and lavapipe execution against the interpreter (fail-before 4). WSL runtime suite passed. Killzone M02 staircase on the Galaxy Tab S7 (Adreno 650): 13.5 game fps split vs 13.6 arrays, no gain on this driver; Windows unchanged. Mali not measured. Fork line only (no upstream PRs).

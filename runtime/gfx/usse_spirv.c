@@ -18,6 +18,10 @@
  * compile-time-constant properties of the program) except INDEXED1/2 addressing, which needs a
  * runtime array index: the index registers idx1/idx2 are one more Private word array (var_idx),
  * and an INDEXED operand becomes an OpAccessChain whose index is computed from it (see idx_ptr).
+ * ANDROID-PERF-02: only a bank some INDEXED operand addresses keeps that array; every other TEMP/PA/O/FPINTERNAL
+ * bank is split into one zero-initialised Function-scope uint per word the program touches (reg_word_ptr), because
+ * proprietary mobile compilers may leave a constant-indexed 160-word array in memory. RECOMP_GPU_REGSPLIT=0 keeps the
+ * arrays; RECOMP_GPU_REGSPLIT_LOG=1 prints, per translated module, which banks were split and how many words each uses.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,7 +59,7 @@ enum {
 	SpvOpImage = 100, SpvOpImageFetch = 95, SpvOpImageGather = 96, SpvOpImageQuerySizeLod = 103, SpvOpDPdx = 207, SpvOpDPdy = 208,
 	SpvOpImageRead = 98,
 };
-enum { SpvStorageUniformConstant = 0, SpvStorageInput = 1, SpvStorageUniform = 2, SpvStorageOutput = 3, SpvStoragePrivate = 6 };
+enum { SpvStorageUniformConstant = 0, SpvStorageInput = 1, SpvStorageUniform = 2, SpvStorageOutput = 3, SpvStoragePrivate = 6, SpvStorageFunction = 7 };
 enum { SpvExecModelVertex = 0, SpvExecModelFragment = 4 };
 enum { SpvDecorationLocation = 30, SpvDecorationBinding = 33, SpvDecorationDescriptorSet = 34,
        SpvDecorationBuiltIn = 11, SpvDecorationFlat = 14, SpvDecorationBlock = 2, SpvDecorationNonWritable = 24,
@@ -85,6 +89,7 @@ static void ins(Buf *b, int op, int n, const uint32_t *args) {
 typedef struct {
 	uint32_t next_id;
 	Buf caps, ext, memmodel, entry, execmodes, decos, types, func;
+	Buf fvars;   /* Function-scope OpVariables (the split register words): finish_module puts them first in the entry block */
 	uint32_t glsl_ext;
 	uint32_t t_void, t_bool, t_float, t_uint, t_int, t_fn_void;
 	/* cache: kind 'f'=float vec, 'u'=uint vec, 'i'=int vec, 'p'=pointer(storage,pointee), 'a'=array(elem,len) */
@@ -176,7 +181,11 @@ static uint32_t composite_extract1(Spv *s, uint32_t type, uint32_t composite, ui
 typedef struct {
 	Spv s;
 	uint32_t ptr_priv_u, ptr_sa_u;             /* Private uint*, Uniform-block uint* (SA) */
-	uint32_t var_r, var_pa, var_o, var_i;        /* Private arrays */
+	uint32_t var_r, var_pa, var_o, var_i;        /* Private arrays (0 for a split bank) */
+	uint8_t split[4];                              /* ANDROID-PERF-02: bank slot (0 TEMP, 1 PA, 2 O, 3 FPINTERNAL) held as one Function variable per word */
+	uint32_t word_var[4][160];                     /* a split slot's word variables, declared on first use (0: not yet) */
+	uint32_t ptr_func_u;                           /* Function uint* */
+	uint8_t indexed[4];                            /* the slots some INDEXED1/2 operand addresses (they keep their arrays) */
 	uint32_t var_sa;                               /* Uniform block instance (SA) */
 	uint32_t var_p;                                 /* Private bool[4] predicates (always false: VTST/VTSTMSK unsupported here) */
 	uint32_t var_idx;                                /* Private uint[2] index registers idx1/idx2 (UsseInst.idx), zero-initialised */
@@ -393,22 +402,39 @@ static uint32_t float_to_half_spv(Spv *s, uint32_t f) {
 	return result3(s, &s->func, SpvOpSelect, t_uint(s), is_overflow, overflow, in_range);        /* ne>=31 (incl. e==255) overrides everything */
 }
 
+/* ANDROID-PERF-02: a pointer to word `word` of register slot `slot` (0 TEMP, 1 PA, 2 O, 3 FPINTERNAL). A bank the program
+ * never indexes at runtime is split: each word it touches is its own Function-scope uint, zero-initialised like the array
+ * it replaces (declared on first use, emitted at the top of the entry block by finish_module). Proprietary mobile
+ * compilers (Adreno, Mali) may keep a 160-word Private array in memory even when every index is constant; scalar
+ * Function variables are what their register allocators promote. A runtime-indexed bank keeps its Private array. */
+static uint32_t reg_word_ptr(Gen *g, int slot, uint32_t word) {
+	Spv *s = &g->s;
+	word %= slot == 3 ? 16u : 160u;
+	if (!g->split[slot]) {
+		uint32_t arr = slot == 0 ? g->var_r : slot == 1 ? g->var_pa : slot == 2 ? g->var_o : g->var_i;
+		return access1(s, g->ptr_priv_u, arr, c_uint(s, word));
+	}
+	if (!g->word_var[slot][word]) {
+		uint32_t id = nid(s); INS(&s->fvars, SpvOpVariable, g->ptr_func_u, id, SpvStorageFunction, c_uint(s, 0));
+		g->word_var[slot][word] = id;
+	}
+	return g->word_var[slot][word];
+}
 /* get a Private/Uniform pointer to word `num` (already repeat-stepped) of `bank`; returns ok=0 for
  * banks this pass doesn't model as addressable memory (FPCONST/IMM handled by the caller directly;
  * IDXD1/2 have a runtime address and go through idx_ptr instead -- lane_ptr routes them; GLOBAL and
  * SPECIAL not here) */
 static RegPtr bank_ptr(Gen *g, int bank, int num) {
 	Spv *s = &g->s; RegPtr r = {0, 0, t_uint(s)};
-	uint32_t idx;
 	switch (bank) {
-	case BK_TEMP: idx = c_uint(s, (uint32_t)num % 160); r.ptr = access1(s, g->ptr_priv_u, g->var_r, idx); r.ok = 1; return r;
+	case BK_TEMP: r.ptr = reg_word_ptr(g, 0, (uint32_t)num % 160); r.ok = 1; return r;
 	case BK_PA:   /* vertex stage: copied in from the input SSBO once at the top of the shader (see
 	               * the prologue in usse_spirv_translate), not read from it directly -- a program
 	               * that writes PA (allowed; it's a plain register bank, not read-only hardware
 	               * input) must not write into the shared per-vertex SSBO through it */
-		idx = c_uint(s, (uint32_t)num % 160); r.ptr = access1(s, g->ptr_priv_u, g->var_pa, idx); r.ok = 1; return r;
-	case BK_O:    idx = c_uint(s, (uint32_t)num % 160); r.ptr = access1(s, g->ptr_priv_u, g->var_o, idx); r.ok = 1; return r;
-	case BK_FPI:  idx = c_uint(s, (uint32_t)num % 16);  r.ptr = access1(s, g->ptr_priv_u, g->var_i, idx); r.ok = 1; return r;
+		r.ptr = reg_word_ptr(g, 1, (uint32_t)num % 160); r.ok = 1; return r;
+	case BK_O:    r.ptr = reg_word_ptr(g, 2, (uint32_t)num % 160); r.ok = 1; return r;
+	case BK_FPI:  r.ptr = reg_word_ptr(g, 3, (uint32_t)num % 16); r.ok = 1; return r;
 	case BK_IDX:  /* the index registers themselves (usse.c's bank_read_raw/bank_write_raw): word 1 is
 	               * idx1, word 2 idx2. Any other word reads as 0 there and swallows writes -- one
 	               * pointer can't be both, so those (no program seen addresses them) stay rejected */
@@ -436,6 +462,10 @@ static RegPtr idx_ptr(Gen *g, const UOperand *o, int add) {
 	static const int basebanks[4] = {BK_TEMP, BK_O, BK_PA, BK_SA};
 	Spv *s = &g->s; RegPtr r = {0, 0, t_uint(s)};
 	int base = basebanks[(o->num >> 5) & 3], k = o->num & 0x1F;
+	if ((base == BK_TEMP && g->split[0]) || (base == BK_PA && g->split[1]) || (base == BK_O && g->split[2])) {   /* the pre-scan keeps every indexed bank an array: never here */
+		if (!g->why[0]) snprintf(g->why, sizeof g->why, "internal: INDEXED access to split register bank %d", base);
+		return r;
+	}
 	uint32_t idxv = load(s, t_uint(s), access1(s, g->ptr_priv_u, g->var_idx, c_uint(s, o->bank == BK_IDXD1 ? 0 : 1)));
 	uint32_t w = uop2(s, SpvOpIAdd, uop2(s, SpvOpShiftLeftLogical, idxv, c_uint(s, 1)), c_uint(s, (uint32_t)(k + add)));
 	if (base == BK_SA) {   /* word n = vector n/4, component n%4 of the uniform block, as bank_ptr's BK_SA */
@@ -1880,7 +1910,7 @@ static void finish_module(SpirvModule *out, Spv *s, uint32_t entry_fn) {
 		/* recompute header bound now that fn_type/fnhdr/lbl allocated more ids */
 		hdr.w[3] = s->next_id;
 		Buf all = {0};
-		Buf *parts[] = {&hdr, &s->caps, &s->ext, &s->memmodel, &s->entry, &s->execmodes, &s->decos, &s->types, &fn_type, &fnhdr, &lbl, &s->func};
+		Buf *parts[] = {&hdr, &s->caps, &s->ext, &s->memmodel, &s->entry, &s->execmodes, &s->decos, &s->types, &fn_type, &fnhdr, &lbl, &s->fvars, &s->func};
 		for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) for (uint32_t j = 0; j < parts[i]->n; j++) buf_push(&all, parts[i]->w[j]);
 		buf_push(&all, (6u << 16) | 56 /*OpFunctionEnd -- wrong word count fixed below*/);
 		all.n--;   /* OpFunctionEnd takes no operands: word count 1 */
@@ -2381,7 +2411,7 @@ static void emit_vertex_fetch(Gen *g, const UsseVfLayout *vf, int npa, int *ok) 
 	 * one it builds with any other vertex shader, so the fragment stages predicted pipelines had built were never reused
 	 * (Killzone frame_12587: 0 of 200 pipelines faster; with the CPU packer's records, which come from a buffer, 1.9 s vs 14.1 s) */
 	zero_w = uop2(s, SpvOpBitwiseAnd, g->vindex, zero_w); one_w = uop2(s, SpvOpBitwiseOr, zero_w, one_w);
-	for (int w = 0; w < npa; w++) store(s, access1(s, g->ptr_priv_u, g->var_pa, c_uint(s, (uint32_t)w)), zero_w);   /* every record word the packer's memset gave, as an unknown */
+	for (int w = 0; w < npa; w++) store(s, reg_word_ptr(g, 1, (uint32_t)w), zero_w);   /* every record word the packer's memset gave, as an unknown */
 	for (int i = 0; i < vf->n; i++) {
 		int st = vf->a[i].stream & 15;
 		if (c.base_w[st] || c.base_b[st]) continue;
@@ -2398,7 +2428,7 @@ static void emit_vertex_fetch(Gen *g, const UsseVfLayout *vf, int npa, int *ok) 
 			for (int w = 0; w < (a->rawlen + 3) / 4; w++) {
 				uint32_t v = vf_fetch(g, &c, st, a->offset + 4u * (uint32_t)w, 4);
 				int tail = a->rawlen - 4 * w; if (tail < 4) v = uop2(s, SpvOpBitwiseAnd, v, c_uint(s, (1u << (8 * tail)) - 1));
-				store(s, access1(s, g->ptr_priv_u, g->var_pa, c_uint(s, (uint32_t)(a->reg + w))), v);
+				store(s, reg_word_ptr(g, 1, (uint32_t)(a->reg + w)), v);
 			}
 			continue;
 		}
@@ -2410,7 +2440,7 @@ static void emit_vertex_fetch(Gen *g, const UsseVfLayout *vf, int npa, int *ok) 
 			raw[k] = k < a->comps ? vf_fetch(g, &c, st, a->offset + (uint32_t)(k * size), size) : 0;
 			comps[k] = k < a->comps ? vf_convert(g, raw[k], a->fmt) : result1(s, &s->func, SpvOpBitcast, t_float(s), k == 3 ? one_w : zero_w);   /* (0,0,0,1), opaque (above) */
 		}
-		if (a->kind == 2) { for (int k = 0; k < a->dcomps; k++) store(s, access1(s, g->ptr_priv_u, g->var_pa, c_uint(s, (uint32_t)(a->reg + k))), result1(s, &s->func, SpvOpBitcast, tu, comps[k])); }
+		if (a->kind == 2) { for (int k = 0; k < a->dcomps; k++) store(s, reg_word_ptr(g, 1, (uint32_t)(a->reg + k)), result1(s, &s->func, SpvOpBitcast, tu, comps[k])); }
 		else for (int k = 0; k < a->dcomps; k += 2) {   /* F16 lanes, or'd into the word like the packer's |= (the array starts zeroed) */
 			uint32_t h[2];
 			for (int j = 0; j < 2 && k + j < a->dcomps; j++) {
@@ -2423,12 +2453,12 @@ static void emit_vertex_fetch(Gen *g, const UsseVfLayout *vf, int npa, int *ok) 
 			}
 			uint32_t w = h[0];
 			if (k + 1 < a->dcomps) w = uop2(s, SpvOpBitwiseOr, w, uop2(s, SpvOpShiftLeftLogical, h[1], c_uint(s, 16)));
-			uint32_t p = access1(s, g->ptr_priv_u, g->var_pa, c_uint(s, (uint32_t)(a->reg + k / 2)));
+			uint32_t p = reg_word_ptr(g, 1, (uint32_t)(a->reg + k / 2));
 			store(s, p, uop2(s, SpvOpBitwiseOr, load(s, tu, p), w));
 		}
 	}
-	if (vf->index_reg >= 0 && vf->index_reg < npa) store(s, access1(s, g->ptr_priv_u, g->var_pa, c_uint(s, (uint32_t)vf->index_reg)), g->vindex);
-	if (vf->instance_reg >= 0 && vf->instance_reg < npa) store(s, access1(s, g->ptr_priv_u, g->var_pa, c_uint(s, (uint32_t)vf->instance_reg)), zero_w);
+	if (vf->index_reg >= 0 && vf->index_reg < npa) store(s, reg_word_ptr(g, 1, (uint32_t)vf->index_reg), g->vindex);
+	if (vf->instance_reg >= 0 && vf->instance_reg < npa) store(s, reg_word_ptr(g, 1, (uint32_t)vf->instance_reg), zero_w);
 }
 
 SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout *vl, const UsseFragLayout *fl,
@@ -2493,10 +2523,26 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 	g.ptr_priv_u = t_ptr(s, SpvStoragePrivate, t_u);
 	uint32_t arr160 = t_array(s, t_u, c_uint(s, 160), 160), arr16 = t_array(s, t_u, c_uint(s, 16), 16);
 	uint32_t ptr_arr160 = t_ptr(s, SpvStoragePrivate, arr160), ptr_arr16 = t_ptr(s, SpvStoragePrivate, arr16);
-	g.var_r = global_var(s, ptr_arr160, SpvStoragePrivate, const_null_array(s, arr160));
-	g.var_pa = global_var(s, ptr_arr160, SpvStoragePrivate, const_null_array(s, arr160));
-	g.var_o = global_var(s, ptr_arr160, SpvStoragePrivate, const_null_array(s, arr160));
-	g.var_i = global_var(s, ptr_arr16, SpvStoragePrivate, const_null_array(s, arr16));
+	/* ANDROID-PERF-02: a bank no INDEXED1/2 operand names (their base bank: bits 6:5 of the raw number, see idx_ptr) is
+	 * split into per-word Function variables (reg_word_ptr); RECOMP_GPU_REGSPLIT=0 keeps every bank an array */
+	{	const char *e = getenv("RECOMP_GPU_REGSPLIT");
+		int split_on = !(e && *e == '0');
+		int indexed[4] = {0, 0, 0, 0};   /* slot 0 TEMP, 1 PA, 2 O (FPINTERNAL is never an INDEXED base) */
+		for (int i = 0; i < n; i++) {
+			const UOperand *ops[4] = {&code[i].dst, &code[i].s0, &code[i].s1, &code[i].s2};
+			for (int k = 0; k < 4; k++) if (ops[k]->bank == BK_IDXD1 || ops[k]->bank == BK_IDXD2) {
+				static const int slot_of_base[4] = {0, 2, 1, -1};   /* basebanks {TEMP, O, PA, SA} */
+				int sl = slot_of_base[(ops[k]->num >> 5) & 3];
+				if (sl >= 0) indexed[sl] = 1;
+			}
+		}
+		for (int sl = 0; sl < 4; sl++) { g.indexed[sl] = (uint8_t)indexed[sl]; g.split[sl] = (uint8_t)(split_on && !indexed[sl]); }
+		g.ptr_func_u = t_ptr(s, SpvStorageFunction, t_u);
+	}
+	if (!g.split[0]) g.var_r = global_var(s, ptr_arr160, SpvStoragePrivate, const_null_array(s, arr160));
+	if (!g.split[1]) g.var_pa = global_var(s, ptr_arr160, SpvStoragePrivate, const_null_array(s, arr160));
+	if (!g.split[2]) g.var_o = global_var(s, ptr_arr160, SpvStoragePrivate, const_null_array(s, arr160));
+	if (!g.split[3]) g.var_i = global_var(s, ptr_arr16, SpvStoragePrivate, const_null_array(s, arr16));
 	if (g.thread_words) {
 		uint32_t arr = t_array(s, t_u, c_uint(s, g.thread_words), g.thread_words);
 		g.var_thread = global_var(s, t_ptr(s, SpvStoragePrivate, arr), SpvStoragePrivate, const_null_array(s, arr));
@@ -2591,7 +2637,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 		else for (uint32_t w = 0; w < npa; w++) {
 			uint32_t word = uop2(s, SpvOpIAdd, uop2(s, SpvOpIMul, g.vindex, c_uint(s, npa)), c_uint(s, w));
 			uint32_t v = load(s, t_u, access2(s, g.ptr_vin_u, g.var_vin, c_uint(s, 0), word));
-			store(s, access1(s, g.ptr_priv_u, g.var_pa, c_uint(s, w)), v);
+			store(s, reg_word_ptr(&g, 1, w), v);
 		}
 	}
 
@@ -2731,10 +2777,13 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 	const uint32_t var_sa_now = g.var_sa;
 	uint32_t pcf_vars[6] = {g.var_r, g.var_pa, g.var_o, g.var_i, g.var_idx, g.var_p}, pcf_types[6], pcf_saved[6], pcf_step[2] = {0, 0}, pcf_acc = 0;
 	int8_t pcf_inc0[4][17]; memcpy(pcf_inc0, g.inc, sizeof pcf_inc0);
+	uint32_t split_saved[4][160];   /* a tap variant's split words at the save point, 0 for a word first touched later (its zero initialiser) */
 	if (taps > 1) {
 		pcf_types[0] = pcf_types[1] = pcf_types[2] = t_array(s, t_u, c_uint(s, 160), 160); pcf_types[3] = t_array(s, t_u, c_uint(s, 16), 16);
 		pcf_types[4] = t_array(s, t_u, c_uint(s, 2), 2); pcf_types[5] = t_array(s, t_bool(s), c_uint(s, 4), 4);
-		for (int k = 0; k < 6; k++) pcf_saved[k] = load(s, pcf_types[k], pcf_vars[k]);
+		for (int k = 0; k < 6; k++) if (k >= 4 || !g.split[k]) pcf_saved[k] = load(s, pcf_types[k], pcf_vars[k]);
+		for (int k = 0; k < 4; k++) if (g.split[k]) for (int w = 0; w < 160; w++)   /* a split bank: the words touched so far, one by one */
+			split_saved[k][w] = g.word_var[k][w] ? load(s, t_u, g.word_var[k][w]) : 0;
 		for (int k = 0; k < 2 && !lerp && g.is_fragment; k++) {   /* the grid step in UV, UsseDrawUniforms.vfetch[0..1] */
 			uint32_t pw = nid(s); INS(&s->func, SpvOpAccessChain, g.ptr_sa_u, pw, g.var_sa, c_uint(s, 4), c_uint(s, (uint32_t)k));
 			pcf_step[k] = result1(s, &s->func, SpvOpBitcast, t_float(s), load(s, t_u, pw));
@@ -2743,7 +2792,12 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 	for (int tap = 0; tap < taps && ok; tap++) {
 		if (taps > 1) {
 			int side = taps == 16 ? 4 : taps == 9 ? 3 : 2;
-			if (tap) { for (int k = 0; k < 6; k++) store(s, pcf_vars[k], pcf_saved[k]); memcpy(g.inc, pcf_inc0, sizeof pcf_inc0); }
+			if (tap) {
+				for (int k = 0; k < 6; k++) if (k >= 4 || !g.split[k]) store(s, pcf_vars[k], pcf_saved[k]);
+				for (int k = 0; k < 4; k++) if (g.split[k]) for (int w = 0; w < 160; w++)   /* every split word back to its saved value or 0 */
+					if (g.word_var[k][w]) store(s, g.word_var[k][w], split_saved[k][w] ? split_saved[k][w] : c_uint(s, 0));
+				memcpy(g.inc, pcf_inc0, sizeof pcf_inc0);
+			}
 			if (g.motion) { g.var_sa = tap ? g.var_sa_prev : var_sa_now; g.pos_only = tap; }
 			else if (lerp) { if (tap) emit_frag_color_preload(&g, c_vec4(s, 1.0f), &ok); }
 			else {
@@ -2944,7 +2998,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 	if (max_smp >= 0 && smp_units_out) for (int i = 0; i < g.nsmp && i < max_smp; i++) smp_units_out[i] = g.smp_units[i];
 	if (nsmp_out) *nsmp_out = g.nsmp;
 	m.nldst_sa = g.nwin; memcpy(m.ldst_sa, g.win_sa, sizeof m.ldst_sa); m.frag_ldst_storage = g.ldst_storage_only; m.motion = g.motion;
-	if (!ok) { free(s->caps.w); free(s->ext.w); free(s->memmodel.w); free(s->entry.w); free(s->execmodes.w); free(s->decos.w); free(s->types.w); free(s->func.w); m.ok = 0; return m; }
+	if (!ok) { free(s->caps.w); free(s->ext.w); free(s->memmodel.w); free(s->entry.w); free(s->execmodes.w); free(s->decos.w); free(s->types.w); free(s->func.w); free(s->fvars.w); m.ok = 0; return m; }
 
 	uint32_t iface[2 + 16 + 7]; int niface = 0;
 	if (g.var_vprobe) iface[niface++] = g.var_vprobe;
@@ -2957,9 +3011,18 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 	if (g.var_frag_depth) iface[niface++] = g.var_frag_depth;
 	if (g.var_frag_coord) iface[niface++] = g.var_frag_coord;
 	m.frag_fetch = g.fetch;
+	{	const char *e = getenv("RECOMP_GPU_REGSPLIT_LOG");   /* ANDROID-PERF-02: one line per translated module, for counting indexed banks */
+		if (e && *e && *e != '0') {
+			int words[4] = {0, 0, 0, 0};
+			for (int k = 0; k < 4; k++) for (int w = 0; w < 160; w++) words[k] += g.word_var[k][w] != 0;
+			fprintf(stderr, "    gpu: regsplit %s %08x: indexed TEMP %d PA %d O %d; split TEMP %d PA %d O %d FPI %d; words %d %d %d %d\n",
+			        g.is_fragment ? "frag" : "vert", usse_program_hash(prog), g.indexed[0], g.indexed[1], g.indexed[2],
+			        g.split[0], g.split[1], g.split[2], g.split[3], words[0], words[1], words[2], words[3]);
+		}
+	}
 	module_header(s, g.is_fragment, entry_fn, iface, niface);
 	finish_module(&m, s, entry_fn);
-	free(s->caps.w); free(s->ext.w); free(s->memmodel.w); free(s->entry.w); free(s->execmodes.w); free(s->decos.w); free(s->types.w); free(s->func.w);
+	free(s->caps.w); free(s->ext.w); free(s->memmodel.w); free(s->entry.w); free(s->execmodes.w); free(s->decos.w); free(s->types.w); free(s->func.w); free(s->fvars.w);
 	return m;
 }
 

@@ -67,6 +67,7 @@ run imedlg_test       -O1 -g -Wall -I ../core imedlg_test.c ../core/imedlg.c -lp
 run addcont_test      -O1 -g -Wall -I ../core addcont_test.c
 run cheats_test       -O1 -g -Wall -I ../core cheats_test.c
 run repatch_test      -O1 -g -Wall -I ../core repatch_test.c -lpthread   # REPATCH-01 (python3: the layering step)
+run usse_regsplit_test $CF -D_GNU_SOURCE $INC usse_regsplit_test.c ../gfx/usse.c ../gfx/usse_spirv.c -lm   # ANDROID-PERF-02 (GPU execution: README)
 
 if [ "$fail" -ne 0 ]; then echo "$fail test(s) failed"; exit 1; fi
 echo "all runtime tests passed"

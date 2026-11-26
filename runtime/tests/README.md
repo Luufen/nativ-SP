@@ -647,3 +647,19 @@ Checks the anisotropy and Vulkan present-mode defaults (`runtime/core/platform_d
 
     c++ -I ../core -I ../ui platform_defaults_test.cpp -o /tmp/pd && /tmp/pd
     c++ -I ../core -I ../ui -D__ANDROID__ platform_defaults_test.cpp -o /tmp/pda && /tmp/pda
+
+## Split register banks in the GPU translator: `usse_regsplit_test.c`
+
+ANDROID-PERF-02. `usse_spirv.c` keeps a TEMP/PA/O/FPINTERNAL bank as a `Private` word array only when an INDEXED1/2
+operand addresses it; every other bank becomes one zero-initialised `Function` uint per word the program touches
+(`RECOMP_GPU_REGSPLIT=0` keeps the arrays). Four hand-encoded VBW fragment programs (no INDEXED, an INDEXED1 TEMP read,
+an INDEXED2 O write, and the blend-lerp two-run variant whose split words must be restored between runs) are run by the
+interpreter and translated with the split on and off: the bank layout must match, spirv-val must accept every module
+(`SPIRV_VAL`), and with `-DUSSE_REGSPLIT_VK` each module is drawn on the first Vulkan device (lavapipe) and the pixel
+must equal the interpreter's colour words. fail-before: the four "split on" layout checks.
+
+    cc -O1 -g -Wall -D_GNU_SOURCE -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_regsplit_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_regsplit_test -lm && /tmp/usse_regsplit_test
+
+GPU execution (WSL with mesa-vulkan-drivers; Vulkan-Headers from <https://github.com/KhronosGroup/Vulkan-Headers>):
+
+    cc -O1 -g -Wall -D_GNU_SOURCE -DUSSE_REGSPLIT_VK -I <Vulkan-Headers>/include -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_regsplit_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_regsplit_test -lm -ldl && VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json /tmp/usse_regsplit_test
