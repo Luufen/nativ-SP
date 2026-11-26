@@ -5,10 +5,11 @@
  * The values must not change -- the launcher's display depends on them. */
 #include <cstring>
 #include <string>
+#include "../core/platform_defaults.h"
 inline const char *setting_default(const char *k) {
 	static const struct { const char *k, *v; } d[] = {
 		{"render_scale", "1"}, {"fullscreen", "0"}, {"aspect_ratio", "native"}, {"hud_layout", "edges"},
-		{"aspect", "fit"}, {"frame_rate", "30"}, {"post_aa", "1"}, {"sharpen", "0.35"}, {"anisotropy", "16"},
+		{"aspect", "fit"}, {"frame_rate", "30"}, {"post_aa", "1"}, {"sharpen", "0.35"}, {"anisotropy", DEFAULT_ANISOTROPY_STR},
 		{"shadow_filter", "1"}, {"full_res_world", "1"}, {"ssao", "1"}, {"ssao_strength", "1"}, {"osd", "0"},
 		{"input_mode", "auto"}, {"mouse_look", "1"}, {"raw_look", "1"}, {"mouse_sens", "1"},
 		{"mouse_invert", "0"}, {"shoulder_buttons", "triggers"}, {"touch_cursor_speed", "1"}, {"osb", "auto"}, {"osb_size", "1"}, {"gyro", "1"},

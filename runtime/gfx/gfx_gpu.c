@@ -37,6 +37,7 @@
 #include "guestwatch.h"
 #include "metrics.h"
 #include "settings.h"
+#include "../core/platform_defaults.h"
 #include "ssao.h"
 #include "texpack.h"
 #ifdef RECOMP_MTL_ARCHIVE
@@ -1184,7 +1185,7 @@ static SDL_GPUSamplerAddressMode gxm_addr_mode(int m) {
 	default: return SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;   /* 3, 5, 6, 7 */
 	}
 }
-/* anisotropic filtering (settings "anisotropy" 1 off / 2 / 4 / 8 / 16, default 16; RECOMP_ANISO wins): the
+/* anisotropic filtering (settings "anisotropy" 1 off / 2 / 4 / 8 / 16, default 16, Android 1; RECOMP_ANISO wins): the
  * Vita samples with little or none, so surfaces at a glancing angle -- floors, walls, roads -- blur into
  * their small mip levels. (Measured 2026-10-10 on two Uncharted replays: no pixel changed, nor with every
  * sampler clamped to mip 0 -- its textures are so low-resolution that nothing on screen minifies at
@@ -1195,7 +1196,7 @@ static SDL_GPUSamplerAddressMode gxm_addr_mode(int m) {
 static int aniso_cur = -1;
 static int aniso_want(void) {
 	extern int settings_int(const char *, int);
-	const char *e = getenv("RECOMP_ANISO"); int n = e ? atoi(e) : settings_int("anisotropy", 16);
+	const char *e = getenv("RECOMP_ANISO"); int n = e ? atoi(e) : settings_int("anisotropy", DEFAULT_ANISOTROPY);
 	return n >= 16 ? 16 : n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1;
 }
 static SDL_GPUSampler *tex_sampler(TexEntry *e, int minf, int magf, int addru, int addrv, int miplin) {

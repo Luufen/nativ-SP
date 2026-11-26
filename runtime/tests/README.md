@@ -640,3 +640,10 @@ includes np.c with guest_call4 recorded (WSL):
     cc -O1 -g -Wall -Wno-unused-function -D_GNU_SOURCE -I ../core -I ../net -I ../platform -I ../../recompiler -I ../.. np_offline_test.c -o /tmp/np_offline_test -lpthread -Wl,--unresolved-symbols=ignore-all && /tmp/np_offline_test
 
 It prints `all passed` and exits 0 (fail-before: hle_np_offline does not exist).
+
+## The platform's defaults: `platform_defaults_test.cpp`
+
+Checks the anisotropy and Vulkan present-mode defaults (`runtime/core/platform_defaults.h`), desktop and Android:
+
+    c++ -I ../core -I ../ui platform_defaults_test.cpp -o /tmp/pd && /tmp/pd
+    c++ -I ../core -I ../ui -D__ANDROID__ platform_defaults_test.cpp -o /tmp/pda && /tmp/pda

@@ -15,7 +15,7 @@
  * Keys (consumer, values):
  *   render_scale  gfx_gpu.c   1..6                      internal resolution (5760x3264 at 6)
  *   aspect        window.c    fit | stretch | fill      how the 960x544 picture meets the window
- *   present_mode  window.c    vsync | mailbox | immediate (default empty = today's rule: mailbox on Vulkan, else vsync)
+ *   present_mode  window.c    vsync | mailbox | immediate (default empty = today's rule: mailbox on Vulkan, else vsync; Android: vsync)
  *                             how frames reach the screen; read once at the swapchain setup (RECOMP_PRESENT_MODE wins)
  *   game_lang     apputil.c   auto | en_us | en_gb | de | fr | es | it | nl | pt | pt_br | pl | fi | sv | da | no | tr | ru |
  *                             ja | ko | zh_hans | zh_hant (default auto)   the Vita system language a game sees (game_lang.h);
@@ -28,7 +28,7 @@
  *                             touch-modifier pair, Guide and Back+Start stay the menu's
  *   post_aa       post.c      0 | 1 (default 1)         FXAA on the finished frame (RECOMP_POST_AA wins)
  *   sharpen       post.c      0..1 (default 0.35)       CAS sharpening at output resolution, 0 off (RECOMP_SHARPEN wins)
- *   anisotropy    gfx_gpu.c   1 | 2 | 4 | 8 | 16 (default 16)   anisotropic texture filtering (RECOMP_ANISO wins)
+ *   anisotropy    gfx_gpu.c   1 | 2 | 4 | 8 | 16 (default 16, Android 1)   anisotropic texture filtering (RECOMP_ANISO wins)
  *   input_mode    window.c    auto | pad | kbm (default auto)   keyboard+mouse or the pad; auto: the device last used
  *   mouse_look    window.c    0 | 1 (default 1)          keyboard+mouse: the mouse captured as the look (Alt frees it)
  *   mouse_sens    window.c    0.1..5 (default 1.0)       the look's sensitivity (a raw-look hook's, or the right-stick stand-in's)
