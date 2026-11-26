@@ -80,7 +80,17 @@ for abi in $ABIS; do
   printf '#!/bin/sh\nD=$(cd "$(dirname "$0")/.." && pwd)\nexec "$D/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" "$@"\n' > "bin/$abi-ar"
   chmod +x bin/$abi-*
 done
-[[ -d sdl-src ]] || { mkdir sdl-src.tmp; tar xzf "dl/SDL3-$SDL.tar.gz" -C sdl-src.tmp --strip-components 1; mv sdl-src.tmp sdl-src; }
+# Nativ's patches to the pinned SDL release (runtime/platform/sdl-patches/README.md: the Vulkan pipeline cache file,
+# ANDROID-PERF-03); a change to them extracts SDL afresh and rebuilds it for every ABI
+PATCHES=$HERE/../sdl-patches
+PSTAMP=$(cat "$PATCHES"/*.patch "$PATCHES"/*.h | tr -d '\r' | sha256sum | cut -c1-16)
+if [[ ! -d sdl-src || $(cat sdl-src/.nativ-patches 2>/dev/null) != "$PSTAMP" ]]; then
+  rm -rf sdl-src sdl-src.tmp; mkdir sdl-src.tmp; tar xzf "dl/SDL3-$SDL.tar.gz" -C sdl-src.tmp --strip-components 1
+  cp "$PATCHES"/*.h sdl-src.tmp/src/gpu/vulkan/
+  for p in "$PATCHES"/*.patch; do patch -d sdl-src.tmp -p1 --quiet --forward < "$p" || { echo "SDL patch $p does not apply to SDL $SDL"; exit 1; }; done
+  echo "$PSTAMP" > sdl-src.tmp/.nativ-patches; mv sdl-src.tmp sdl-src
+  for abi in $ABIS; do rm -rf "$abi/SDL3"; done
+fi
 [[ -d zlib-src ]] || { mkdir zlib-src.tmp; tar xzf "dl/zlib-$ZLIB.tar.gz" -C zlib-src.tmp --strip-components 1; mv zlib-src.tmp zlib-src; }
 GEN=; command -v ninja >/dev/null && GEN="-G Ninja"
 for abi in $ABIS; do
@@ -144,4 +154,4 @@ for abi in $ABIS; do
     -L"$abi/SDL3/lib" -lSDL3 "$abi/zlib/lib/libz.a" -llog -Wl,-z,max-page-size=16384
   ok="$ok $abi:$("$LLVM/bin/llvm-readelf" -h "check/libmain-$abi.so" | awk -F: '/Machine/ {gsub(/^ +/,"",$2); print $2}' | tr ' ' '_')"
 done
-echo "toolchain: $D (NDK $NDK clang $("$LLVM/bin/clang" --version | head -1 | sed 's/.*clang version \([0-9.]*\).*/\1/'), API $API; build-tools $BUILD_TOOLS, android-$PLATFORM; JDK $("$JAVA_HOME/bin/java" -version 2>&1 | head -1 | sed 's/.*"\(.*\)".*/\1/'); SDL3 $SDL; zlib $ZLIB; FFmpeg $FFMPEG $(ls */ffmpeg/lib/libavcodec.a 2>/dev/null | wc -l)/2 ABIs; sdl-java $(ls sdl-java/classes.dex >/dev/null 2>&1 && echo classes.dex || echo MISSING); check$ok)"
+echo "toolchain: $D (NDK $NDK clang $("$LLVM/bin/clang" --version | head -1 | sed 's/.*clang version \([0-9.]*\).*/\1/'), API $API; build-tools $BUILD_TOOLS, android-$PLATFORM; JDK $("$JAVA_HOME/bin/java" -version 2>&1 | head -1 | sed 's/.*"\(.*\)".*/\1/'); SDL3 $SDL (patches $(cat sdl-src/.nativ-patches)); zlib $ZLIB; FFmpeg $FFMPEG $(ls */ffmpeg/lib/libavcodec.a 2>/dev/null | wc -l)/2 ABIs; sdl-java $(ls sdl-java/classes.dex >/dev/null 2>&1 && echo classes.dex || echo MISSING); check$ok)"

@@ -57,6 +57,11 @@ if [[ ! -f zlib/lib/libz.a ]]; then
   ( cd zlib-src && for f in adler32 crc32 deflate infback inffast inflate inftrees trees zutil compress uncompr gzclose gzlib gzread gzwrite; do "$CC" -O2 -fPIC -D_LARGEFILE64_SOURCE=1 -DHAVE_UNISTD_H -c $f.c -o $f.o; done
     "$D/bin/ar" rcs ../zlib/lib/libz.a *.o; cp zlib.h zconf.h ../zlib/include/ )
 fi
+# Nativ's patches to the pinned SDL release (runtime/platform/sdl-patches/README.md: the Vulkan pipeline cache file,
+# ANDROID-PERF-03); a change to them rebuilds SDL
+PATCHES=$HERE/../sdl-patches
+PSTAMP=$(cat "$PATCHES"/*.patch "$PATCHES"/*.h | tr -d '\r' | sha256sum | cut -c1-16)
+[[ $(cat SDL3/.nativ-patches 2>/dev/null) == "$PSTAMP" ]] || rm -rf SDL3
 if [[ ! -f SDL3/lib/libSDL3.so.0 ]]; then
   # SDL's backends' headers without the machine's own C library headers: zig's glibc headers stay the only ones, so the
   # library asks for nothing newer than glibc $GLIBC. The headers are only declarations: every backend is loaded at run time
@@ -67,6 +72,8 @@ if [[ ! -f SDL3/lib/libSDL3.so.0 ]]; then
   done
   [[ -d /usr/lib/dbus-1.0/include ]] && ln -s /usr/lib/dbus-1.0/include/dbus "sdl-inc/dbus-arch"   # (dbus-arch-deps.h: dbus.h includes it as <dbus/dbus-arch-deps.h>)
   rm -rf sdl-src sdl-build; mkdir sdl-src; tar xzf "dl/SDL3-$SDL.tar.gz" -C sdl-src --strip-components 1
+  cp "$PATCHES"/*.h sdl-src/src/gpu/vulkan/
+  for p in "$PATCHES"/*.patch; do patch -d sdl-src -p1 --quiet --forward < "$p" || { echo "SDL patch $p does not apply to SDL $SDL"; exit 1; }; done
   GEN=; command -v ninja >/dev/null && GEN="-G Ninja"
   INC="-isystem $D/sdl-inc -isystem $D/sdl-inc/dbus-1.0 -isystem $D/sdl-inc/pipewire-0.3 -isystem $D/sdl-inc/spa-0.2 -isystem $D/sdl-inc/libdecor-0 -isystem $D/sdl-inc/libdrm -isystem $D/sdl-inc/libusb-1.0"
   [[ -e sdl-inc/dbus-arch ]] && { mkdir -p sdl-inc/dbus-arch-root/dbus; ln -sf /usr/lib/dbus-1.0/include/dbus/dbus-arch-deps.h sdl-inc/dbus-arch-root/dbus/; INC="$INC -isystem $D/sdl-inc/dbus-arch-root"; }
@@ -86,7 +93,7 @@ if [[ ! -f SDL3/lib/libSDL3.so.0 ]]; then
     -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_DOCS=OFF \
     -DCMAKE_LINK_DEPENDS_USE_LINKER=OFF \
     -DSDL_HIDAPI_LIBUSB=OFF -DSDL_JACK=OFF -DSDL_SNDIO=OFF -DSDL_KMSDRM=OFF -DSDL_RPATH=OFF > sdl-configure.log
-  cmake --build sdl-build -j"$(nproc)" > sdl-build.log 2>&1 && cmake --install sdl-build >> sdl-build.log 2>&1
+  cmake --build sdl-build -j"$(nproc)" > sdl-build.log 2>&1 && cmake --install sdl-build >> sdl-build.log 2>&1 && echo "$PSTAMP" > SDL3/.nativ-patches
 fi
 if [[ ! -f ffmpeg/lib/libavcodec.a || ! -f ffmpeg/lib/libnativ_rawdec.a ]]; then
   rm -rf ffmpeg ffmpeg-src; mkdir ffmpeg-src; tar xJf "dl/ffmpeg-$FFMPEG.tar.xz" -C ffmpeg-src --strip-components 1

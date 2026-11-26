@@ -640,3 +640,16 @@ includes np.c with guest_call4 recorded (WSL):
     cc -O1 -g -Wall -Wno-unused-function -D_GNU_SOURCE -I ../core -I ../net -I ../platform -I ../../recompiler -I ../.. np_offline_test.c -o /tmp/np_offline_test -lpthread -Wl,--unresolved-symbols=ignore-all && /tmp/np_offline_test
 
 It prints `all passed` and exits 0 (fail-before: hle_np_offline does not exist).
+
+## The Vulkan pipeline cache file: `vk_pcache_test.c`
+
+ANDROID-PERF-03. Checks `runtime/platform/sdl-patches/nativ_vk_pcache.h`, the file format SDL's patched Vulkan backend
+loads its VkPipelineCache from and saves it to: a file written for a device loads back unchanged with no `.tmp` left;
+a foreign file (vendor, GPU, driver version, pipelineCacheUUID), a flipped payload byte, a truncated, padded, empty,
+garbage or missing file and a bad Vulkan cache header are refused (the cache starts empty); a blob for another device is
+never written; a save that cannot be written fails and leaves the old file. Fail-before: SDL 3.4.16 keeps no pipeline
+cache at all.
+
+    cc -O1 -g -Wall vk_pcache_test.c -o /tmp/vk_pcache_test && /tmp/vk_pcache_test
+
+It prints `all passed` and exits 0.

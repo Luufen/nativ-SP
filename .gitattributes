@@ -1,1 +1,2 @@
 runtime/platform/android/driver/build.sh text eol=lf
+runtime/platform/sdl-patches/* text eol=lf
