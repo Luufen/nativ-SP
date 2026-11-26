@@ -1,6 +1,6 @@
 # Release follow-up
 
-- ANDROID-PERF-01, 2026-11-26. Android defaults: anisotropy 1x and a vsync (FIFO) Vulkan swapchain; desktop keeps 16x and mailbox. Saved settings, RECOMP_ANISO and RECOMP_PRESENT_MODE still win. The WSL runtime suite passed (including the new platform_defaults_test, desktop and Android) and the synthetic Android builds passed 15 checks. Device fps and the touch-flicker check are open.
+- ANDROID-PERF-01, 2026-11-26. Android defaults: anisotropy 1x and a vsync (FIFO) Vulkan swapchain; desktop keeps 16x and mailbox. Saved settings, RECOMP_ANISO and RECOMP_PRESENT_MODE still win. The WSL runtime suite passed (including the new platform_defaults_test, desktop and Android) and the synthetic Android builds passed 15 checks. Galaxy Tab S7, Killzone M02, two A/B pairs: 13.7 -> 14.0 and 13.5 -> 13.9 fps median (old 16x+mailbox -> new defaults); the owner saw no flicker; no swapchain recreation in 60 s of play. Mali is untested.
 
 - Android on Samsung Xclipse 940. Investigate the severe graphics defects in the Uncharted: Golden Abyss prologue.
   The Vulkan startup crash is fixed.
