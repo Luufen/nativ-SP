@@ -26,6 +26,10 @@
  *                             dpad_down | dpad_left | dpad_right | left_stick | right_stick   the pad button bound
  *                             to that Vita button (Controls > Controller buttons); the shoulders keep their
  *                             touch-modifier pair, Guide and Back+Start stay the menu's
+ *   texpack_max_size  gfx_gpu.c  pixels, 0 none          a texture pack's replacements: their longest side (default:
+ *                             2048 on Android on Mali and PowerVR, else none; RECOMP_TEXPACK_MAX_SIZE wins; read once)
+ *   texpack_budget_mb gfx_gpu.c  MiB, 0 none             ... and their memory together (default: from the device's RAM
+ *                             on Android on Mali and PowerVR, else none: tex_caps.h; RECOMP_TEXPACK_BUDGET_MB wins)
  *   post_aa       post.c      0 | 1 (default 1)         FXAA on the finished frame (RECOMP_POST_AA wins)
  *   sharpen       post.c      0..1 (default 0.35)       CAS sharpening at output resolution, 0 off (RECOMP_SHARPEN wins)
  *   anisotropy    gfx_gpu.c   1 | 2 | 4 | 8 | 16 (default 16, Android 1)   anisotropic texture filtering (RECOMP_ANISO wins)

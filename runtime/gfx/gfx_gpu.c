@@ -23,6 +23,7 @@
 #include "target_scale.h"   /* RECOMP_TARGET_SCALE's rules (UC-LAMP: factor 0) */
 #include "fsr/fsr.h"
 #include "vk_caps.h"   /* ANDROID-PERF-07 */
+#include "tex_caps.h"   /* ANDROID-PERF-06 */
 #ifdef __ANDROID__
 #include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
@@ -421,6 +422,7 @@ static int vk_fragment_stores;   /* a Vulkan device with fragmentStoresAndAtomic
  * enable_depth_clip = false would ask the driver for a clamp it doesn't have (SDL checks that only in debug mode). All of
  * Nativ's pipelines go through this -- Dear ImGui's too (build.py renames its call) */
 static int vk_depth_clip;
+static uint32_t vk_vendor_id;   /* the device's, from the Android probe below; 0: unknown, and on desktop (tex_caps.h) */
 SDL_GPUGraphicsPipeline *gfx_pipeline_create(SDL_GPUDevice *device, const SDL_GPUGraphicsPipelineCreateInfo *info) {
 	SDL_GPUGraphicsPipelineCreateInfo ci = *info;
 	if (vk_depth_clip) ci.rasterizer_state.enable_depth_clip = true;
@@ -449,6 +451,7 @@ static void vk_caps_probe(VkCapsInfo *c) {
 		VkPhysicalDeviceFeatures f; vkGetPhysicalDeviceFeatures(dev, &f);
 		_Static_assert(sizeof f == sizeof c->features, "VkPhysicalDeviceFeatures");
 		memcpy(c->features, &f, sizeof f);
+		c->vendor_id = pp.vendorID;
 		c->api_version = pp.apiVersion; c->max_bound_descriptor_sets = pp.limits.maxBoundDescriptorSets;
 		uint32_t next = 0; vkEnumerateDeviceExtensionProperties(dev, NULL, &next, NULL);
 		VkExtensionProperties *ext = next ? malloc(next * sizeof *ext) : 0;
@@ -490,6 +493,7 @@ static SDL_GPUDevice *create_gpu_device(void) {
 #ifdef __ANDROID__
 	VkCapsInfo caps; VkCapsPlan plan; vk_caps_probe(&caps); vk_caps_plan(&caps, &plan);
 	vk_depth_clip = !plan.depth_clamp;
+	vk_vendor_id = caps.vendor_id;
 	if (plan.missing[0]) fprintf(stderr, "    gpu: ERROR: this GPU's Vulkan driver lacks what the renderer needs: %s\n", plan.missing);
 	if (vk_depth_clip) fprintf(stderr, "    gpu: no depthClamp on this GPU: geometry outside the depth range is clipped, not clamped (parts of a scene may be missing)\n");
 #endif
@@ -1226,7 +1230,7 @@ typedef struct { uint32_t addr, format, width, height, palette; int layout; int 
 	 * watched (streak/calm count the frames towards and back out of that); full: the next check
 	 * re-hashes every page (and closes them again); nchk: re-checks in frame chk_frame */
 	uint32_t span, wclock, nph; uint64_t *ph; int hot, streak, calm, full, nchk; uint64_t big_frame, chk_frame;
-	uint64_t chash; int levels; uint64_t bytes; int rep;   /* rep: e->tex is a texture pack's replacement (texpack.c), not the game's bytes */
+	uint64_t chash; int levels; uint64_t bytes; int rep; uint32_t rbytes;   /* rbytes: that replacement's own size (pack_bytes) */   /* rep: e->tex is a texture pack's replacement (texpack.c), not the game's bytes */
 	uint8_t sx, sy; } TexEntry;   /* sx, sy: a view's texels a guest pixel (its source's scale: target_scale) */   /* chash/levels: the uploaded bytes' hash over the whole span and its mip count (get_texture: a texture that moved) */   /* samp[min][mag][addrmode_u][addrmode_v]; layout: GfxTexture's (3 = cube: a 6-layer cube texture) */
 /* The texture table: up to MAXTEX entries and tex_budget() bytes of GPU textures (an estimate per entry, TexEntry.bytes), the
  * least recently used one replaced past either. It was a fixed 512 entries: a Killzone area that samples more than that a
@@ -1235,6 +1239,7 @@ typedef struct { uint32_t addr, format, width, height, palette; int layout; int 
  * session's textures came to ~850 MB at most if all were kept. tex_index: the slot last found for an (address, format,
  * size) hash, checked against the entry on use -- a bind no longer scans the table. */
 #define MAXTEX 4096
+static void tex_release_samplers(TexEntry *e);
 static TexEntry textures[MAXTEX]; static int ntextures; static uint64_t tex_clock, tex_bytes;
 #define TEX_INDEX 16384
 static uint16_t tex_index[TEX_INDEX];   /* slot + 1, 0 none */
@@ -1245,6 +1250,44 @@ static unsigned tex_key(const GfxTexture *t) {
 static uint64_t tex_budget(void) {   /* RECOMP_GPU_TEX_BUDGET_MB, default 1024 */
 	static uint64_t b; if (!b) { const char *e = getenv("RECOMP_GPU_TEX_BUDGET_MB"); b = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 1024) << 20; }
 	return b;
+}
+/* ANDROID-PERF-06 (tex_caps.h): the replacements' own bytes, apart from tex_bytes, which charges every entry by the game
+ * texture's size. Over the budget, the least recently used replaced entry not bound in this frame or the one before goes
+ * (its next bind loads it again); with none left, the new replacement is refused and the game's own texture uploaded --
+ * so a frame whose replacements don't fit doesn't reload them from the pack every frame. */
+static uint64_t pack_bytes, tex_frame_clock[2];   /* tex_clock at the last two presents, the older first */
+static const TexCaps *tex_caps(void) {   /* read once, at the first replacement: the device is made by then (vk_vendor_id) */
+	static TexCaps c; static int init;
+	if (init) return &c;
+	init = 1;
+	extern const char *settings_str(const char *, const char *, char *, int);
+	char s[96], b[96]; int android = 0;
+#ifdef __ANDROID__
+	android = 1;
+#endif
+	const int ram = SDL_GetSystemRAM();
+	c = tex_caps_plan(android, vk_vendor_id, ram > 0 ? (uint32_t)ram : 0, getenv("RECOMP_TEXPACK_MAX_SIZE"), settings_str("texpack_max_size", "", s, sizeof s),
+	                  getenv("RECOMP_TEXPACK_BUDGET_MB"), settings_str("texpack_budget_mb", "", b, sizeof b));
+	if (c.max_side || c.budget_mb) fprintf(stderr, "    texpack: longest side %u px, replacement budget %u MiB (0: none; RAM %d MiB, GPU vendor 0x%x; RECOMP_TEXPACK_MAX_SIZE, RECOMP_TEXPACK_BUDGET_MB)\n", c.max_side, c.budget_mb, ram, vk_vendor_id);
+	return &c;
+}
+static void pack_release(TexEntry *e) { pack_bytes -= e->rbytes; e->rbytes = 0; }
+static void pack_drop(TexEntry *x) {   /* a replaced entry's GPU objects go; its emptied slot (address 0, never used) is the first one reused when the cache is full */
+	batch_retire(x->tex, "texture released");
+	tex_release_samplers(x);
+	if (x->tex) SDL_ReleaseGPUTexture(gpu(), x->tex);
+	pack_release(x); tex_bytes -= x->bytes; free(x->ph);
+	memset(x, 0, sizeof *x);
+}
+static int pack_admit(const TexEntry *self, uint64_t bytes) {   /* room for a replacement of this size? */
+	const uint32_t budget = tex_caps()->budget_mb;
+	while (tex_caps_over(pack_bytes, bytes, budget)) {
+		TexEntry *v = 0;
+		for (int i = 1; i < ntextures; i++) { TexEntry *x = &textures[i]; if (x != self && x->rbytes && x->used <= tex_frame_clock[0] && (!v || x->used < v->used)) v = x; }
+		if (!v) return 0;
+		pack_drop(v);
+	}
+	return 1;
 }
 /* a content hash over eight independent 64-bit lanes, 64 bytes an iteration: 23 GB/s on this Mac
  * against 3.5 for the single-lane hash it replaces (each lane's multiply chain is the bound, so
@@ -1481,10 +1524,12 @@ static void tring_end(SDL_GPUCommandBuffer *cmd, uint32_t lo, uint32_t hi) {   /
 	if (ntring_use == NTRING_USE) { SDL_WaitForGPUFences(gpu(), true, &tring_use[0].f, 1); SDL_ReleaseGPUFence(gpu(), tring_use[0].f); memmove(tring_use, tring_use + 1, sizeof tring_use[0] * (size_t)--ntring_use); }
 	tring_use[ntring_use++] = (TringUse){ f, lo, hi, tring_lap };
 }
+#define TEXPACK_NO_ALPHA ((SDL_GPUTexture *)-1)   /* texpack_upload: the replacement lacks the transparency the game's has */
+#define TEXPACK_LIMITED ((SDL_GPUTexture *)-2)    /* ... or doesn't fit the size cap or the budget (tex_caps.h): logged there */
 /* A texture pack's replacement (texpack.c: RECOMP_TEXTURE_PACK, Vita3K's naming) for the texture about to be uploaded:
  * a DDS (BC1/BC2/BC3/BC7, every level it carries) or a PNG (one level, RGBA8) as the GPU texture, at its own size -- the
- * shaders sample by normalized coordinates, so a 1024x1024 replacement of a 256x256 texture is simply sharper. Returns
- * 1 when e->tex now holds it. */
+ * shaders sample by normalized coordinates, so a 1024x1024 replacement of a 256x256 texture is simply sharper. Past the
+ * size cap (tex_caps.h) a DDS starts at its first level that fits and a PNG is scaled down. */
 /* whether a DXT1 level has any transparent texel: a block in its 3-colour mode (colour 0 <= colour 1) using index 3 */
 static int bc1_has_alpha(const uint8_t *p, size_t nblocks) {
 	for (size_t b = 0; b < nblocks; b++, p += 8) {
@@ -1509,7 +1554,10 @@ static int tex_has_alpha(const GfxTexture *t) {
 	if (base == 0x0C000000u) { for (size_t i = 0; i < (size_t)w * h; i++) if (d[4 * i + 3] != 0xff) return 1; return 0; }
 	return base == 0x02000000u || base == 0x04000000u;   /* (4444 / 1555: not looked into) */
 }
-static SDL_GPUTexture *texpack_upload(const char *path, int srgb, int need_alpha, uint32_t *bytes_out) {
+static void texpack_limited(const char *path, const char *why) {
+	static int told; if (told++ < 16) fprintf(stderr, "    texpack: %s: %s: the game's own texture is kept\n", path, why);
+}
+static SDL_GPUTexture *texpack_upload(const TexEntry *self, const char *path, int srgb, int need_alpha, uint32_t *bytes_out) {
 	FILE *f = fopen(path, "rb"); if (!f) return 0;
 	fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
 	uint8_t *buf = n > 0 ? malloc((size_t)n) : 0;
@@ -1540,7 +1588,12 @@ static SDL_GPUTexture *texpack_upload(const char *path, int srgb, int need_alpha
 			uint32_t sz = ((lw + 3) / 4) * ((lh + 3) / 4) * blk; if (off + total + sz > (uint32_t)n) break; total += sz; lv++;
 		}
 		if (!lv) { free(buf); return 0; }
-		if (need_alpha && blk == 8 && !bc1_has_alpha(buf + off, (size_t)((w + 3) / 4) * ((h + 3) / 4))) { free(buf); return (SDL_GPUTexture *)-1; }   /* (opaque: refused, see tex_has_alpha) */
+		if (need_alpha && blk == 8 && !bc1_has_alpha(buf + off, (size_t)((w + 3) / 4) * ((h + 3) / 4))) { free(buf); return TEXPACK_NO_ALPHA; }   /* (opaque: refused, see tex_has_alpha) */
+		{	const int skip = tex_caps_skip_levels(w, h, lv, tex_caps()->max_side);
+			if (skip < 0) { texpack_limited(path, "larger than the size cap, and the DDS has no mip level within it"); free(buf); return TEXPACK_LIMITED; }
+			for (int l = 0; l < skip; l++, w = w > 1 ? w / 2 : 1, h = h > 1 ? h / 2 : 1, lv--) { const uint32_t sz = ((w + 3) / 4) * ((h + 3) / 4) * blk; off += sz; total -= sz; }
+		}
+		if (!pack_admit(self, total)) { texpack_limited(path, "over the replacement budget"); free(buf); return TEXPACK_LIMITED; }
 		SDL_GPUTextureCreateInfo ci = { .type = SDL_GPU_TEXTURETYPE_2D, .format = fmt, .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER, .width = w, .height = h, .layer_count_or_depth = 1, .num_levels = lv, .sample_count = SDL_GPU_SAMPLECOUNT_1 };
 		tex = SDL_CreateGPUTexture(gpu(), &ci);
 		SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = total };
@@ -1568,8 +1621,13 @@ static SDL_GPUTexture *texpack_upload(const char *path, int srgb, int need_alpha
 		if (sf) SDL_DestroySurface(sf);
 		if (rgba && need_alpha) {   /* (opaque: refused, see tex_has_alpha) */
 			int any = 0; for (int y = 0; y < rgba->h && !any; y++) { const uint8_t *row = (const uint8_t *)rgba->pixels + (size_t)rgba->pitch * y; for (int x = 0; x < rgba->w; x++) if (row[4 * x + 3] != 0xff) { any = 1; break; } }
-			if (!any) { SDL_DestroySurface(rgba); free(buf); return (SDL_GPUTexture *)-1; }
+			if (!any) { SDL_DestroySurface(rgba); free(buf); return TEXPACK_NO_ALPHA; }
 		}
+		for (uint32_t nw, nh; rgba && tex_caps_downscale_step((uint32_t)rgba->w, (uint32_t)rgba->h, tex_caps()->max_side, &nw, &nh); ) {
+			SDL_Surface *small = SDL_ScaleSurface(rgba, (int)nw, (int)nh, SDL_SCALEMODE_LINEAR);
+			SDL_DestroySurface(rgba); rgba = small;
+		}
+		if (rgba && !pack_admit(self, 4ull * (uint32_t)rgba->w * (uint32_t)rgba->h)) { texpack_limited(path, "over the replacement budget"); SDL_DestroySurface(rgba); free(buf); return TEXPACK_LIMITED; }
 		if (rgba) {
 			uint32_t w = (uint32_t)rgba->w, h = (uint32_t)rgba->h;
 			SDL_GPUTextureCreateInfo ci = { .type = SDL_GPU_TEXTURETYPE_2D, .format = srgb ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER, .width = w, .height = h, .layer_count_or_depth = 1, .num_levels = 1, .sample_count = SDL_GPU_SAMPLECOUNT_1 };
@@ -1608,18 +1666,19 @@ static void upload_texture(TexEntry *e, const GfxTexture *t) {
 		SDL_ReleaseGPUTexture(gpu(), e->tex); e->tex = 0; e->bc = 0;
 	}
 	if (e->tex && e->rep) { SDL_ReleaseGPUTexture(gpu(), e->tex); e->tex = 0; e->bc = 0; }   /* (a replacement: the new bytes may be another texture's, or the game's own again) */
-	e->rep = 0;
+	e->rep = 0; pack_release(e);
 	if (!cube && texpack_on()) {   /* a texture pack's replacement for these bytes (texpack.c) */
 		const uint64_t h = texpack_hash(t); const char *path = texpack_find(h);
 		if (path) {
-			uint32_t nb = 0; SDL_GPUTexture *rt = texpack_upload(path, GFX_TEX_GAMMA(t->format) != 0, tex_has_alpha(t), &nb);
-			if (rt == (SDL_GPUTexture *)-1) {   /* the game's texture has transparency the replacement lacks: the game's own kept */
+			uint32_t nb = 0; SDL_GPUTexture *rt = texpack_upload(e, path, GFX_TEX_GAMMA(t->format) != 0, tex_has_alpha(t), &nb);
+			if (rt == TEXPACK_LIMITED) { rt = 0; path = 0; }
+			if (rt == TEXPACK_NO_ALPHA) {   /* the game's texture has transparency the replacement lacks: the game's own kept */
 				static int nref; if (nref++ < 16) fprintf(stderr, "    texpack: %016llX (texture %#x %ux%u fmt %#x) has transparent texels its replacement lacks: the game's own kept\n", (unsigned long long)h, t->data, t->width, t->height, t->format);
 				rt = 0; path = 0;
 			}
 			if (rt) {
 				if (e->tex) SDL_ReleaseGPUTexture(gpu(), e->tex);
-				e->tex = rt; e->rep = 1; e->bc = 0; e->layout = (t->u_mode >> 4) & 3; n_tex_uploads++;
+				e->tex = rt; e->rep = 1; e->bc = 0; e->rbytes = nb; pack_bytes += nb; e->layout = (t->u_mode >> 4) & 3; n_tex_uploads++;
 				static int told; if (told++ < 16) fprintf(stderr, "    texpack: %016llX (texture %#x %ux%u) -> %s\n", (unsigned long long)h, t->data, t->width, t->height, path);
 				return;
 			}
@@ -1862,7 +1921,7 @@ static TexEntry *get_texture(const GfxTexture *t) {
 			if (e->checked_frame == gpu_frame_no + 1) {   /* this frame's own textures don't fit: it thrashes again */
 				static int said; if (!said++) fprintf(stderr, "    gpu: the texture cache (%d entries, %llu MB) can't hold one frame's textures: re-uploads every frame from here (RECOMP_GPU_TEX_BUDGET_MB)\n", ntextures, (unsigned long long)(tex_bytes >> 20));
 			}
-			tex_bytes -= e->bytes;
+			tex_bytes -= e->bytes; pack_release(e);
 			batch_retire(e->tex, "texture released");   /* its samplers go too: they are only bound with it */
 			if (e->tex) SDL_ReleaseGPUTexture(gpu(), e->tex);
 			for (int a = 0; a < 4; a++) for (int b = 0; b < 2; b++) for (int c = 0; c < 3; c++) for (int d = 0; d < 3; d++) if (e->samp[a][b][c][d]) SDL_ReleaseGPUSampler(gpu(), e->samp[a][b][c][d]);
@@ -6925,6 +6984,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 		__atomic_store_n(&n_gpu_draws, 0, __ATOMIC_RELAXED); __atomic_store_n(&n_fallback, 0, __ATOMIC_RELAXED); n_fallback_why = 0; n_shader_builds = n_vring_wraps = 0; n_tex_uploads = n_tex_bc = 0; t_total = t_vfetch = t_texhash = t_texup = t_tsync = t_view = t_submit = t_shader = t_pipe = t_bind = t_setup = t_vbuf = t_pass = t_map = t_acq = t_scene_sync = 0;
 	}
 	gpu_frame_no++;   /* textures are re-checked against guest memory from here on */
+	tex_frame_clock[0] = tex_frame_clock[1]; tex_frame_clock[1] = tex_clock;
 	if (gpu()) recipes_step();
 	if (gpu()) {
 		GfxTarget t = { base, 0, width, height, pitch, 0 };
