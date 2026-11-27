@@ -71,6 +71,7 @@ run repatch_test      -O1 -g -Wall -I ../core repatch_test.c -lpthread   # REPAT
 run usse_regsplit_test $CF -D_GNU_SOURCE $INC usse_regsplit_test.c ../gfx/usse.c ../gfx/usse_spirv.c -lm   # ANDROID-PERF-02 (GPU execution: README)
 run vk_pcache_test    -O1 -g -Wall vk_pcache_test.c   # ANDROID-PERF-03: the Vulkan pipeline cache file (../platform/sdl-patches)
 run vk_caps_test      -O1 -g -Wall -I ../gfx vk_caps_test.c   # ANDROID-PERF-07: Android Vulkan features and fallbacks (stub devices)
+run tex_caps_test     -O1 -g -Wall -I ../gfx tex_caps_test.c   # ANDROID-PERF-06: texture-pack size cap and memory budget
 
 if [ "$fail" -ne 0 ]; then echo "$fail test(s) failed"; exit 1; fi
 echo "all runtime tests passed"

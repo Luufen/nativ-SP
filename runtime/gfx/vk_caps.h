@@ -25,6 +25,7 @@ enum {
 typedef struct {
 	int known;                 /* 0: the probe failed, nothing below is meaningful */
 	uint32_t api_version;      /* VkPhysicalDeviceProperties.apiVersion */
+	uint32_t vendor_id;        /* VkPhysicalDeviceProperties.vendorID (tex_caps.h) */
 	uint32_t features[VKCAPS_NFEATURES];
 	int has_swapchain, has_maintenance1;
 	uint32_t max_bound_descriptor_sets;
