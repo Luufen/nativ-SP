@@ -54,7 +54,7 @@ public class SetupActivity extends Activity {
     private Button playButton;
     private Button settings;
     private DriverStore drivers;
-    private Boolean customDrivers;
+    private Integer gpuFamily;
     private File fs;
     private volatile boolean busy;
 
@@ -164,11 +164,14 @@ public class SetupActivity extends Activity {
     }
 
     private void showGpuSettings() {
-        if (customDrivers == null) customDrivers = drivers.supported();
-        AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("Settings · GPU driver")
+        if (gpuFamily == null) gpuFamily = drivers.deviceFamily();
+        boolean custom = gpuFamily != DriverPackage.UNKNOWN;
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+                .setTitle("Settings · GPU driver" + (custom ? " (" + DriverPackage.familyName(gpuFamily) + ")" : ""))
                 .setPositiveButton("Done", null);
-        if (!customDrivers) {
-            dialog.setMessage("System driver\n\nCustom Vulkan drivers require an ARM64 device with a Qualcomm Adreno GPU.")
+        if (!custom) {
+            dialog.setMessage("System driver\n\nCustom Vulkan drivers require an ARM64 device with a Qualcomm Adreno, "
+                    + "Arm Mali or Samsung Xclipse GPU.")
                     .show();
             return;
         }

@@ -663,6 +663,17 @@ must equal the interpreter's colour words. fail-before: the four "split on" layo
 GPU execution (WSL with mesa-vulkan-drivers; Vulkan-Headers from <https://github.com/KhronosGroup/Vulkan-Headers>):
 
     cc -O1 -g -Wall -D_GNU_SOURCE -DUSSE_REGSPLIT_VK -I <Vulkan-Headers>/include -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_regsplit_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_regsplit_test -lm -ldl && VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json /tmp/usse_regsplit_test
+## Android custom drivers' GPU family: `gpu_family_test.c`
+
+ANDROID-PERF-08. Checks `runtime/platform/android/driver/gpu_family.h`, how the Android driver picker tells an Adreno,
+Mali or Xclipse GPU from the vendor ID and device name a Vulkan driver reports. The picker's Java rules (the ZIP format
+and which packages a GPU family takes) are checked by `dev/test_android_driver.py` (Linux or WSL with a JDK: the Android
+toolchain's or one on the PATH).
+
+    cc -O1 -g -Wall -I ../platform/android/driver gpu_family_test.c -o /tmp/gpu_family_test && /tmp/gpu_family_test
+
+It prints `gpu_family_test: 15 checks, 0 failed` and exits 0.
+
 ## Android Vulkan features and fallbacks: `vk_caps_test.c`
 
 ANDROID-PERF-07. Checks `runtime/gfx/vk_caps.h`, what Nativ decides from an Android device's Vulkan features before it

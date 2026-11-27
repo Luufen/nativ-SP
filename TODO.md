@@ -18,6 +18,7 @@
 
 - TERRARIA-01, 2026-11-24. Share compiled bodies for alternate entries with the same decode. The synthetic shared-entry check and all 22 recompiler fixtures passed. On the same Terraria analysis, generated C fell from 17.6 GB to 144 MB and the Windows host linked.
 
+- ANDROID-PERF-08, 2026-11-27. The Android driver picker also takes AdrenoTools-layout ZIPs for Arm Mali (PanVK) and Samsung Xclipse (RADV) GPUs: the family comes from the library's name, then the package's (none: Adreno), must match the system GPU's vendor ID or name (driver/gpu_family.h), and the loaded driver must report it again. Import only; no driver shipped or downloaded. gpu_family_test 15/0 and dev/test_android_driver.py 25/0 (synthetic); runtime suite, Android builds 15/15 and export APK 22/22 pass. Not run on any device. Fork line only.
 - TERRARIA-01, 2026-11-24. The ARM MLAS emitter sets N and Z from the wrapped result. All 23 recompiler fixtures passed. Terraria passed the previous instruction stop on native Windows.
 - TERRARIA-01, 2026-11-24. U8U8 textures honour the GXM SWIZZLE2 modes (GR, 00GR, GRRR, RGGG, GRGR, 00RG) in gfx_soft.c, which the GPU upload shares. Terraria's luminance-alpha title sky no longer draws opaque red-green over an uncleared target. Native Windows reaches a clean title screen at frame 1100, and run_ci_tests.sh passes.
 - TERRARIA-01, 2026-11-24. Seed the start-game ARM entry 0x810ce498 (missed_function at lr 0x810cdd80). Recompile: 12289 functions. Title regression run exits 0; owner start-game check pending.

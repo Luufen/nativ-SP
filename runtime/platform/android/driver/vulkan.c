@@ -11,15 +11,19 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
+#include "gpu_family.h"
+
 static PFN_vkGetInstanceProcAddr custom_proc;
 
 static bool library_mapped(const char *library_path);
 
-static bool probe_adreno(PFN_vkGetInstanceProcAddr proc, const char *library_path)
+/* The GPU family the driver behind proc reports: its first device of a known family, or of `wanted` when that is set.
+ * GPU_FAMILY_UNKNOWN when there is none, or when library_path is given and that file is not the one loaded. */
+static int probe_family(PFN_vkGetInstanceProcAddr proc, const char *library_path, int wanted)
 {
-    if (!proc) return false;
+    if (!proc) return GPU_FAMILY_UNKNOWN;
     PFN_vkCreateInstance create = (PFN_vkCreateInstance)proc(NULL, "vkCreateInstance");
-    if (!create) return false;
+    if (!create) return GPU_FAMILY_UNKNOWN;
     VkApplicationInfo app = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = "Project Nativ",
@@ -30,14 +34,14 @@ static bool probe_adreno(PFN_vkGetInstanceProcAddr proc, const char *library_pat
         .pApplicationInfo = &app,
     };
     VkInstance instance;
-    if (create(&info, NULL, &instance) != VK_SUCCESS) return false;
+    if (create(&info, NULL, &instance) != VK_SUCCESS) return GPU_FAMILY_UNKNOWN;
 
     PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)proc(instance, "vkDestroyInstance");
     PFN_vkEnumeratePhysicalDevices enumerate =
         (PFN_vkEnumeratePhysicalDevices)proc(instance, "vkEnumeratePhysicalDevices");
     PFN_vkGetPhysicalDeviceProperties properties =
         (PFN_vkGetPhysicalDeviceProperties)proc(instance, "vkGetPhysicalDeviceProperties");
-    bool adreno = false;
+    int family = GPU_FAMILY_UNKNOWN;
     uint32_t count = 0;
     if (enumerate && properties && enumerate(instance, &count, NULL) == VK_SUCCESS && count) {
         VkPhysicalDevice *devices = calloc(count, sizeof(*devices));
@@ -45,12 +49,11 @@ static bool probe_adreno(PFN_vkGetInstanceProcAddr proc, const char *library_pat
             for (uint32_t i = 0; i < count; ++i) {
                 VkPhysicalDeviceProperties props;
                 properties(devices[i], &props);
-                // Qualcomm's proprietary driver uses its PCI vendor ID. Mesa uses VK_VENDOR_ID_MESA
-                // on some versions, so also recognise the device name reported by Turnip.
-                if (props.vendorID == 0x5143 || strstr(props.deviceName, "Adreno")) {
-                    __android_log_print(ANDROID_LOG_INFO, "Nativ", "Vulkan probe: %s (driver 0x%x)",
-                                        props.deviceName, props.driverVersion);
-                    adreno = true;
+                int found = gpu_family(props.vendorID, props.deviceName);
+                __android_log_print(ANDROID_LOG_INFO, "Nativ", "Vulkan probe: %s (vendor 0x%x, driver 0x%x, family %d)",
+                                    props.deviceName, props.vendorID, props.driverVersion, found);
+                if (found != GPU_FAMILY_UNKNOWN && (wanted == GPU_FAMILY_UNKNOWN || found == wanted)) {
+                    family = found;
                     break;
                 }
             }
@@ -58,21 +61,22 @@ static bool probe_adreno(PFN_vkGetInstanceProcAddr proc, const char *library_pat
         free(devices);
     }
     // Android may unload its selected HAL when the last instance is destroyed.
-    if (adreno && library_path) adreno = library_mapped(library_path);
+    if (family != GPU_FAMILY_UNKNOWN && library_path && !library_mapped(library_path)) family = GPU_FAMILY_UNKNOWN;
     if (destroy) destroy(instance, NULL);
-    return adreno;
+    return family;
 }
 
-JNIEXPORT jboolean JNICALL Java_org_projectnativ_app_DriverStore_supportsAdreno(
+JNIEXPORT jint JNICALL Java_org_projectnativ_app_DriverStore_systemFamily(
     JNIEnv *env, jclass type)
 {
     (void)env;
     (void)type;
     void *loader = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
-    if (!loader) return JNI_FALSE;
-    bool supported = probe_adreno((PFN_vkGetInstanceProcAddr)dlsym(loader, "vkGetInstanceProcAddr"), NULL);
+    if (!loader) return GPU_FAMILY_UNKNOWN;
+    int family = probe_family((PFN_vkGetInstanceProcAddr)dlsym(loader, "vkGetInstanceProcAddr"), NULL,
+                              GPU_FAMILY_UNKNOWN);
     dlclose(loader);
-    return supported;
+    return family;
 }
 
 static bool library_mapped(const char *library_path)
@@ -100,7 +104,7 @@ static bool library_mapped(const char *library_path)
 }
 
 JNIEXPORT jboolean JNICALL Java_org_projectnativ_app_DriverStore_activate(
-    JNIEnv *env, jclass type, jstring hooks_path, jstring driver_path, jstring filename)
+    JNIEnv *env, jclass type, jstring hooks_path, jstring driver_path, jstring filename, jint family)
 {
     (void)type;
     const char *hooks = (*env)->GetStringUTFChars(env, hooks_path, NULL);
@@ -112,7 +116,7 @@ JNIEXPORT jboolean JNICALL Java_org_projectnativ_app_DriverStore_activate(
         void *loader = adrenotools_open_libvulkan(RTLD_NOW, ADRENOTOOLS_DRIVER_CUSTOM,
                                                   NULL, hooks, directory, library, NULL, NULL);
         if (loader) proc = (PFN_vkGetInstanceProcAddr)dlsym(loader, "vkGetInstanceProcAddr");
-        if (!probe_adreno(proc, library_path)) proc = NULL;
+        if (family == GPU_FAMILY_UNKNOWN || probe_family(proc, library_path, family) != family) proc = NULL;
         if (proc)
             __android_log_print(ANDROID_LOG_INFO, "Nativ", "Custom Vulkan driver loaded: %s", library);
     }
