@@ -151,8 +151,11 @@ Android); others stop at a missing function or a feature Nativ doesn't have yet.
 - **Export** a built game for your own devices: **another Windows PC**, a **Steam Deck** (AppImage) or an **Android**
   phone or tablet (`.apk`). Steam Deck and Android builds run in WSL on Windows and need a one-time toolchain setup
   (`runtime/platform/linux/setup-toolchain.sh`, `runtime/platform/android/setup-toolchain.sh`).
-  On ARM64 Android devices with a Qualcomm Adreno GPU, open **Settings → GPU driver** in the exported game app.
-  Use **Import ZIP** for an AdrenoTools package such as Mesa Turnip, or choose **System driver** to switch back.
+  On ARM64 Android devices with a Qualcomm Adreno, Arm Mali or Samsung Xclipse GPU, open **Settings → GPU driver** in
+  the exported game app. Use **Import ZIP** for an AdrenoTools package (`meta.json` and one ARM64 library) made for your
+  GPU, such as Mesa Turnip for Adreno, or choose **System driver** to switch back. Packages for another GPU family are
+  refused; one whose names mention no GPU counts as an Adreno driver. No driver is included or downloaded. Mali (PanVK)
+  and Xclipse (RADV) drivers have not been run on a device with Nativ yet.
   You can remove installed packages from the same menu. The choice is saved for that app and takes effect when you tap
   **Play**. To get these settings in an existing Android installation, export a new APK.
 - **Add to Steam**, also from the Steam Deck's Game Mode (its shortcuts start again since lf16, see

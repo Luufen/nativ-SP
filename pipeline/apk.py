@@ -165,7 +165,8 @@ def build_apk(out, *, package, label, libs, assets, icon, keystore, t, version_c
     try:
         platform_src = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "runtime", "platform", "android"))
         java_sources = [os.path.join(platform_src, name) for name in
-                        ("NativActivity.java", "SetupActivity.java", "DriverStore.java", "DiagnosticsExport.java")]
+                        ("NativActivity.java", "SetupActivity.java", "DriverStore.java", "DriverPackage.java",
+                         "DiagnosticsExport.java")]
         libs = {abi: list(files) for abi, files in libs.items()}
         if "arm64-v8a" in libs:
             driver_work = os.path.abspath(os.path.join(w, "driver"))

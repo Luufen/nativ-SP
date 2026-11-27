@@ -47,7 +47,8 @@ public class NativActivity extends SDLActivity {
             if (driver != null) {
                 String hooks = getApplicationInfo().nativeLibraryDir + File.separator;
                 System.loadLibrary("nativ_vulkan");
-                if (DriverStore.activate(hooks, driver.directory.getAbsolutePath() + File.separator, driver.library)) {
+                if (DriverStore.activate(hooks, driver.directory.getAbsolutePath() + File.separator,
+                                         driver.library, driver.family)) {
                     Os.setenv("SDL_VULKAN_LIBRARY", hooks + DriverStore.LOADER, true);
                     Os.setenv("NATIV_CUSTOM_VULKAN", "1", true);
                     return;
