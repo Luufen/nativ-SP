@@ -266,6 +266,12 @@ reference for how many of the Vita's system functions behave.
 Resistance: Burning Skies' EU pack and the fixes it needed come from [Tzeentchnet's fork](https://github.com/Tzeentchnet/nativ)
 by **Tzeentchnet** (taken with their authorship; also offered upstream as their pull request #77), as does the
 Gundam Breaker 3 pack with its fixes (this fork's pull request #14, merged with their authorship).
+The Android performance work in this fork (ANDROID-PERF-01 to 08: Android anisotropy and present-mode defaults,
+split shader register banks, a persistent Vulkan pipeline cache, Arm Mali device fallbacks, texture-pack limits on
+Mali and PowerVR, and Mali and Xclipse drivers in the driver picker) was inspired by ideas from
+[luisxl15's God of War Collection Android port](https://github.com/luisxl15/GOD-OF-WAR-HD-COLLECTION-ANDROID-PORT)
+by **Luis Santos "DESANTA"**. That repository has no licence, so no code was taken from it: this fork's
+implementations are its own.
 
 ---
 
