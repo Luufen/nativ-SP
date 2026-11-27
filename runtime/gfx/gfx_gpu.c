@@ -22,6 +22,11 @@
 #include "gaps.h"   /* GAPS-01 */
 #include "target_scale.h"   /* RECOMP_TARGET_SCALE's rules (UC-LAMP: factor 0) */
 #include "fsr/fsr.h"
+#include "vk_caps.h"   /* ANDROID-PERF-07 */
+#ifdef __ANDROID__
+#include <SDL3/SDL_vulkan.h>
+#include <vulkan/vulkan.h>
+#endif
 #include "view_swz.h"
 #include "view_u16.h"
 #include "pass_count.h"
@@ -412,6 +417,63 @@ static int keep_alpha_blend_needs_copy(void) {
  * VK_ERROR_DEVICE_LOST: Killzone crashed, Unit 13 froze, 2026-10-23). A device without the features is made without them,
  * the tests then off. */
 static int vk_fragment_stores;   /* a Vulkan device with fragmentStoresAndAtomics */
+/* ANDROID-PERF-07: 1 on a device without depthClamp (Arm Mali-G52): every pipeline then clips in depth, where
+ * enable_depth_clip = false would ask the driver for a clamp it doesn't have (SDL checks that only in debug mode). All of
+ * Nativ's pipelines go through this -- Dear ImGui's too (build.py renames its call) */
+static int vk_depth_clip;
+SDL_GPUGraphicsPipeline *gfx_pipeline_create(SDL_GPUDevice *device, const SDL_GPUGraphicsPipelineCreateInfo *info) {
+	SDL_GPUGraphicsPipelineCreateInfo ci = *info;
+	if (vk_depth_clip) ci.rasterizer_state.enable_depth_clip = true;
+	return SDL_CreateGPUGraphicsPipeline(device, &ci);
+}
+#ifdef __ANDROID__
+/* what the device offers (vk_caps.h): SDL_GPU doesn't tell, so a throwaway Vulkan 1.1 instance asks, through the same
+ * loader SDL will use (a custom driver's included) */
+static void vk_caps_probe(VkCapsInfo *c) {
+	memset(c, 0, sizeof *c);
+	if (!SDL_Vulkan_LoadLibrary(NULL)) { fprintf(stderr, "    gpu: Vulkan capability probe: %s\n", SDL_GetError()); return; }
+	PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+	PFN_vkCreateInstance create = gipa ? (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance") : 0;
+	VkApplicationInfo app = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_1 };
+	VkInstanceCreateInfo ici = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app };
+	VkInstance inst = VK_NULL_HANDLE;
+	VkResult r = create ? create(&ici, NULL, &inst) : VK_ERROR_INITIALIZATION_FAILED;
+	if (r != VK_SUCCESS) { fprintf(stderr, "    gpu: Vulkan capability probe: no Vulkan 1.1 instance (VkResult %d)\n", (int)r); SDL_Vulkan_UnloadLibrary(); return; }
+#define VKFN(n) PFN_##n n = (PFN_##n)gipa(inst, #n)
+	VKFN(vkDestroyInstance); VKFN(vkEnumeratePhysicalDevices); VKFN(vkGetPhysicalDeviceProperties); VKFN(vkGetPhysicalDeviceFeatures); VKFN(vkEnumerateDeviceExtensionProperties);
+#undef VKFN
+	VkPhysicalDevice dev = VK_NULL_HANDLE; uint32_t ndev = 1;   /* (the first: a phone has one) */
+	r = vkEnumeratePhysicalDevices(inst, &ndev, &dev);
+	if ((r == VK_SUCCESS || r == VK_INCOMPLETE) && ndev) {
+		VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(dev, &pp);
+		VkPhysicalDeviceFeatures f; vkGetPhysicalDeviceFeatures(dev, &f);
+		_Static_assert(sizeof f == sizeof c->features, "VkPhysicalDeviceFeatures");
+		memcpy(c->features, &f, sizeof f);
+		c->api_version = pp.apiVersion; c->max_bound_descriptor_sets = pp.limits.maxBoundDescriptorSets;
+		uint32_t next = 0; vkEnumerateDeviceExtensionProperties(dev, NULL, &next, NULL);
+		VkExtensionProperties *ext = next ? malloc(next * sizeof *ext) : 0;
+		if (ext && vkEnumerateDeviceExtensionProperties(dev, NULL, &next, ext) == VK_SUCCESS) {
+			for (uint32_t i = 0; i < next; i++) {
+				if (!strcmp(ext[i].extensionName, "VK_KHR_swapchain")) c->has_swapchain = 1;
+				if (!strcmp(ext[i].extensionName, "VK_KHR_maintenance1")) c->has_maintenance1 = 1;
+			}
+			c->known = 1;
+		}
+		free(ext);
+		fprintf(stderr, "    gpu: Vulkan %u.%u.%u on %s (vendor 0x%x, driver 0x%x): maxBoundDescriptorSets %u, depthClamp %u, shaderClipDistance %u (unused), fragmentStoresAndAtomics %u\n",
+		        VK_API_VERSION_MAJOR(pp.apiVersion), VK_API_VERSION_MINOR(pp.apiVersion), VK_API_VERSION_PATCH(pp.apiVersion), pp.deviceName, pp.vendorID, pp.driverVersion,
+		        pp.limits.maxBoundDescriptorSets, (unsigned)f.depthClamp, (unsigned)f.shaderClipDistance, (unsigned)f.fragmentStoresAndAtomics);
+	} else fprintf(stderr, "    gpu: Vulkan capability probe: no physical device (VkResult %d)\n", (int)r);
+	vkDestroyInstance(inst, NULL);
+	SDL_Vulkan_UnloadLibrary();
+}
+/* SDL's default requirements this device is spared: Nativ's shaders declare no ClipDistance, and depth clamping only
+ * where the device has it (gfx_pipeline_create) */
+static void android_gpu_features(SDL_PropertiesID p, const VkCapsPlan *plan) {
+	SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
+	SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_DEPTH_CLAMPING_BOOLEAN, plan->depth_clamp != 0);
+}
+#endif
 /* ANDROID-PERF-03: the file SDL's Vulkan backend keeps its VkPipelineCache in (the driver's compiled pipelines across
  * sessions: Adreno's driver has no disk cache of its own). Nativ's SDL patch, runtime/platform/sdl-patches, loads it with
  * its header checked and saves it atomically; a stock SDL ignores the property. RECOMP_VK_PIPELINE_CACHE=<file>, =0 none;
@@ -425,12 +487,19 @@ static int vk_pcache_file(char *out, size_t n) {
 }
 static SDL_GPUDevice *create_gpu_device(void) {
 	SDL_GPUDevice *d = 0;
+#ifdef __ANDROID__
+	VkCapsInfo caps; VkCapsPlan plan; vk_caps_probe(&caps); vk_caps_plan(&caps, &plan);
+	vk_depth_clip = !plan.depth_clamp;
+	if (plan.missing[0]) fprintf(stderr, "    gpu: ERROR: this GPU's Vulkan driver lacks what the renderer needs: %s\n", plan.missing);
+	if (vk_depth_clip) fprintf(stderr, "    gpu: no depthClamp on this GPU: geometry outside the depth range is clipped, not clamped (parts of a scene may be missing)\n");
+#endif
 #ifndef __APPLE__   /* (on Apple, Metal: SDL could otherwise find MoltenVK) */
 	if (!getenv("SDL_GPU_DRIVER") || !strcmp(getenv("SDL_GPU_DRIVER"), "vulkan")) {
 		uint32_t vk10[55] = {0}; vk10[0] = 1; vk10[26] = 1;   /* VkPhysicalDeviceFeatures, 55 VkBool32 in the spec's order: [0] robustBufferAccess, [26] fragmentStoresAndAtomics */
 		SDL_GPUVulkanOptions vo = {0}; vo.vulkan_api_version = 1u << 22; vo.vulkan_10_physical_device_features = vk10;   /* (VK_MAKE_VERSION(1, 0, 0): SDL's own default) */
 #ifdef __ANDROID__
 		vo.vulkan_api_version |= 1u << 12;   /* Vulkan 1.1 supports the renderer's SPIR-V 1.3 */
+		vk10[VKCAPS_FRAGMENT_STORES_AND_ATOMICS] = (uint32_t)plan.fragment_stores;
 #endif
 		SDL_PropertiesID p = SDL_CreateProperties();
 		SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
@@ -438,15 +507,27 @@ static SDL_GPUDevice *create_gpu_device(void) {
 		SDL_SetStringProperty(p, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "vulkan");
 		{ const char *lp = getenv("RECOMP_GPU_LOW_POWER"); if (lp && *lp && *lp != '0') SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, true); }   /* (RECOMP_GPU_LOW_POWER=1: SDL picks an integrated GPU where there's one beside a discrete one: a laptop's Radeon, for testing) */
 		SDL_SetPointerProperty(p, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vo);
+#ifdef __ANDROID__
+		android_gpu_features(p, &plan);
+#endif
 		{ char pc[1100]; if (vk_pcache_file(pc, sizeof pc)) SDL_SetStringProperty(p, "SDL.gpu.device.create.vulkan.pipeline_cache_file", pc); }
 		d = SDL_CreateGPUDeviceWithProperties(p);
 		if (!d) fprintf(stderr, "    gpu: Vulkan device with robustBufferAccess and fragmentStoresAndAtomics failed: %s\n", SDL_GetError());
 		SDL_DestroyProperties(p);
-		vk_fragment_stores = d != 0;
+		vk_fragment_stores = d != 0 && vk10[26];   /* [26] fragmentStoresAndAtomics */
 	}
 #endif
 #ifdef __APPLE__
 	if (!d) d = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_METALLIB, false, 0);   /* (METALLIB: a shader's library from this machine's archive, mtl_archive.m) */
+#elif defined(__ANDROID__)
+	if (!d) {   /* without the Vulkan options above, but still without the features this GPU lacks (SDL_CreateGPUDevice would require them) */
+		SDL_PropertiesID p = SDL_CreateProperties();
+		SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+		SDL_SetBooleanProperty(p, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
+		android_gpu_features(p, &plan);
+		d = SDL_CreateGPUDeviceWithProperties(p);
+		SDL_DestroyProperties(p);
+	}
 #else
 	if (!d) d = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL, false, 0);
 #endif
@@ -1453,6 +1534,7 @@ static SDL_GPUTexture *texpack_upload(const char *path, int srgb, int need_alpha
 		}
 		(void)fcc;
 		if (fmt == SDL_GPU_TEXTUREFORMAT_INVALID || !w || !h) { fprintf(stderr, "    texpack: %s: a DDS format this doesn't read\n", path); free(buf); return 0; }
+		if (!SDL_GPUTextureSupportsFormat(gpu(), fmt, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_SAMPLER)) { fprintf(stderr, "    texpack: %s: this GPU can't sample the DDS file's block format (Arm Mali has no BC textures): the game's own texture is kept; a PNG replacement works\n", path); free(buf); return 0; }
 		uint32_t total = 0, lv = 0;
 		for (uint32_t l = 0, lw = w, lh = h; l < mips; l++, lw = lw > 1 ? lw / 2 : 1, lh = lh > 1 ? lh / 2 : 1) {
 			uint32_t sz = ((lw + 3) / 4) * ((lh + 3) / 4) * blk; if (off + total + sz > (uint32_t)n) break; total += sz; lv++;
@@ -2365,7 +2447,7 @@ static void pipeline_build(PipeJob *j) {
 		const int guess = j->warm && ((v && v->pred) || (f && f->pred));
 		mtl_archive_want(!guess, v ? __atomic_exchange_n(&v->lib_key, 0, __ATOMIC_ACQ_REL) : 0, f ? __atomic_exchange_n(&f->lib_key, 0, __ATOMIC_ACQ_REL) : 0); }
 #endif
-	SDL_GPUGraphicsPipeline *pp = SDL_CreateGPUGraphicsPipeline(gpu(), &j->ci);
+	SDL_GPUGraphicsPipeline *pp = gfx_pipeline_create(gpu(), &j->ci);
 #ifdef RECOMP_MTL_ARCHIVE
 	if (mtl_archive_on) mtl_archive_want_clear();   /* (if SDL made none) */
 #endif
@@ -2700,7 +2782,7 @@ static SDL_GPUGraphicsPipeline *preload_pipeline(int bit) {   /* -1: the depth p
 	}
 	ci.depth_stencil_state = dss;
 	ci.target_info.num_color_targets = 0; ci.target_info.has_depth_stencil_target = true; ci.target_info.depth_stencil_format = depth_format();
-	pipes[bit + 1] = SDL_CreateGPUGraphicsPipeline(gpu(), &ci);
+	pipes[bit + 1] = gfx_pipeline_create(gpu(), &ci);
 	if (!pipes[bit + 1]) fprintf(stderr, "    gpu: preload pipeline %d: %s\n", bit, SDL_GetError());
 	return pipes[bit + 1];
 }
@@ -3186,7 +3268,7 @@ static SDL_GPUGraphicsPipeline *mv_pipeline(PipeEntry *pe) {
 	ci.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
 	ci.target_info.color_target_descriptions = &ctd; ci.target_info.num_color_targets = 1;
 	ci.target_info.has_depth_stencil_target = true; ci.target_info.depth_stencil_format = depth_format();
-	pe->mv_pipe = SDL_CreateGPUGraphicsPipeline(gpu(), &ci);
+	pe->mv_pipe = gfx_pipeline_create(gpu(), &ci);
 	if (pe->mv_pipe) n_mv_pipes++; else { static int said; if (!said++) fprintf(stderr, "    gpu mv: motion pipeline: %s\n", SDL_GetError()); }
 	return pe->mv_pipe;
 }
@@ -3954,7 +4036,7 @@ static SDL_GPUGraphicsPipeline *view_pipeline_general(int from_depth, SDL_GPUTex
 	ci.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
 	SDL_GPUColorTargetDescription ctd = { .format = fmt };
 	ci.target_info.num_color_targets = 1; ci.target_info.color_target_descriptions = &ctd;
-	pipes[from_depth][fi] = SDL_CreateGPUGraphicsPipeline(gpu(), &ci);
+	pipes[from_depth][fi] = gfx_pipeline_create(gpu(), &ci);
 	if (!pipes[from_depth][fi]) fprintf(stderr, "    gpu: view pipeline (general, fmt %d): %s\n", (int)fmt, SDL_GetError());
 	return pipes[from_depth][fi];
 }
@@ -4048,7 +4130,7 @@ static void view_variant_build(ViewJob *j) {   /* on a build worker or the rende
 #ifdef RECOMP_MTL_ARCHIVE
 		if (mtl_archive_on) mtl_archive_want(1, 0, fkey);
 #endif
-		pipe = SDL_CreateGPUGraphicsPipeline(gpu(), &ci2);
+		pipe = gfx_pipeline_create(gpu(), &ci2);
 #ifdef RECOMP_MTL_ARCHIVE
 		if (mtl_archive_on) mtl_archive_want_clear();
 #endif

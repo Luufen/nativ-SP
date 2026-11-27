@@ -16,6 +16,7 @@
 #include "vk_shaders.h"   /* the post shaders' SPIR-V twins, for Vulkan */
 #include <stdlib.h>
 #include <string.h>
+SDL_GPUGraphicsPipeline *gfx_pipeline_create(SDL_GPUDevice *device, const SDL_GPUGraphicsPipelineCreateInfo *info);   /* gfx_gpu.c: depth clip where the GPU has no depthClamp */
 
 int settings_int(const char *key, int def);
 double settings_float(const char *key, double def);
@@ -108,7 +109,7 @@ static SDL_GPUGraphicsPipeline *pipeline(SDL_GPUDevice *gpu, SDL_GPUShader *fs, 
 	pi.vertex_shader = vs; pi.fragment_shader = fs; pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 	pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE; pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
 	pi.target_info.color_target_descriptions = &ct; pi.target_info.num_color_targets = 1;
-	return SDL_CreateGPUGraphicsPipeline(gpu, &pi);
+	return gfx_pipeline_create(gpu, &pi);
 }
 static int setup(SDL_GPUDevice *gpu, SDL_GPUTextureFormat swap_fmt) {
 	if (broken) return 0;

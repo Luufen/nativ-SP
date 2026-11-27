@@ -254,9 +254,14 @@ def main(argv):
         os.replace(f"{PROMPTS_H}.{os.getpid()}", PROMPTS_H)
     CXXFLAGS += ["-I", IMGUIOBJ]
     for s in imgui_srcs:
-        o = os.path.join(IMGUIOBJ, os.path.splitext(os.path.basename(s))[0] + ".o")
+        o = os.path.join(IMGUIOBJ, os.path.splitext(os.path.basename(s))[0] + ".o"); extra = []
+        if s.endswith("imgui_impl_sdlgpu3.cpp"):
+            # ANDROID-PERF-07: Dear ImGui's pipeline too is made by gfx_gpu.c's gfx_pipeline_create (third_party stays
+            # as released); its own object name, so an object cached from an earlier build isn't reused
+            if os.path.isfile(o): os.remove(o)   # (every .o in this folder is linked)
+            o = o[:-2] + "_nativ.o"; extra = ["-DSDL_CreateGPUGraphicsPipeline=gfx_pipeline_create"]
         if not os.path.isfile(o) or newer(s, o) or newer(os.path.join(RT, "ui", "overlay.h"), o) or (s.endswith("overlay.cpp") and newer(PROMPTS_H, o)) or stale_deps(o):
-            work.append(deps_job([CXX, "-c"] + CXXFLAGS, s, o, CXX))
+            work.append(deps_job([CXX, "-c"] + CXXFLAGS + extra, s, o, CXX))
     # spirv-cross (SPIRV-Cross's C API): only needed where SDL_GPU doesn't consume SPIR-V directly,
     # i.e. on Metal (Mac); Vulkan (Linux/Windows) takes our SPIR-V as-is, no translation at runtime.
     SPIRV_CROSS = []
